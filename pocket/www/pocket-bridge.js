@@ -203,6 +203,7 @@
     spellCheckWords: async (words) => { const o = {}; for (const w of words) o[w] = true; return o; },
     spellSuggest: async () => [],
     spellLearn: async () => true,
+    setSpellLanguage: async () => false, // the spellcheck pass is a desktop thing
     appVersion: async () => 'Pocket 0.1.0',
     logError: async (msg) => {
       try {
@@ -213,7 +214,8 @@
       } catch { console.error(msg); }
       showErrorDetail(msg);
     },
-    onMenu: () => { /* no menu bar in your pocket */ }
+    onMenu: () => { /* no menu bar in your pocket */ },
+    poetryState: () => { /* no Format menu to tick */ }
   };
 
   // Pocket is written on a real keyboard, so Android's on-screen one stays

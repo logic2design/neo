@@ -2,7 +2,7 @@
 // Owns the window and all file-system access. The renderer talks to this
 // through the IPC handlers below (see preload.js for the exposed API).
 
-const { app, BrowserWindow, ipcMain, dialog, Menu, MenuItem } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Menu, MenuItem, utilityProcess } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -18,6 +18,54 @@ app.commandLine.appendSwitch('blink-settings', 'smartInsertDeleteEnabled=false')
 // covers any early access and non-redirected setups.
 let LIBRARY_DIR = path.join(os.homedir(), 'Documents', 'NEO Library');
 let LIBRARY_FILE = path.join(LIBRARY_DIR, 'library.json');
+
+// NEO's few app-level settings (today: a custom library folder) live in the
+// system's per-app data folder, since they must exist before the library
+// is found. Everything about the writing stays in the library itself.
+function settingsPath() { return path.join(app.getPath('userData'), 'settings.json'); }
+function readSettings() {
+  try { return JSON.parse(fs.readFileSync(settingsPath(), 'utf8')); } catch { return {}; }
+}
+function writeSettings(obj) {
+  fs.mkdirSync(path.dirname(settingsPath()), { recursive: true });
+  fs.writeFileSync(settingsPath(), JSON.stringify(obj, null, 2));
+}
+
+// File → Library Folder…: point NEO at any folder, or back at the default.
+// The library is plain files, so the writer moves them; NEO only follows.
+async function chooseLibraryFolder() {
+  const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+  const defaultDir = path.join(app.getPath('documents'), 'NEO Library');
+  const custom = LIBRARY_DIR !== defaultDir;
+  const ask = await dialog.showMessageBox(win, {
+    type: 'question',
+    message: 'Library folder',
+    detail: `Your books live in:\n${LIBRARY_DIR}\n\nChoose another folder and NEO restarts there. Existing books stay where they are — move the files yourself if you want them along.`,
+    buttons: custom ? ['Choose Folder…', 'Use Default Folder', 'Cancel'] : ['Choose Folder…', 'Cancel'],
+    defaultId: 0,
+    cancelId: custom ? 2 : 1
+  });
+  let next = null;
+  if (ask.response === 0) {
+    const r = await dialog.showOpenDialog(win, {
+      title: 'Choose a folder for your NEO library',
+      defaultPath: LIBRARY_DIR,
+      properties: ['openDirectory', 'createDirectory']
+    });
+    if (r.canceled || !r.filePaths[0]) return;
+    next = r.filePaths[0];
+  } else if (custom && ask.response === 1) {
+    next = null; // back to the default
+  } else {
+    return;
+  }
+  if (next === LIBRARY_DIR) return;
+  const settings = readSettings();
+  if (next) settings.libraryDir = next; else delete settings.libraryDir;
+  writeSettings(settings);
+  app.relaunch();
+  app.exit(0);
+}
 
 function ensureLibrary() {
   if (!fs.existsSync(LIBRARY_DIR)) fs.mkdirSync(LIBRARY_DIR, { recursive: true });
@@ -798,38 +846,100 @@ function createWindow() {
 }
 
 // ---------------------------------------------------------------------------
-// Spellcheck: NEO's own dictionary (Hunspell en-US via nspell), identical on
-// every platform. The renderer paints the squiggles and asks for suggestions.
+// Spellcheck: NEO's own bundled Hunspell dictionaries via nspell, identical
+// on every platform. The renderer paints the squiggles and asks for
+// suggestions. Edit → Spellcheck Language picks the dictionary; the choice
+// lives in library.json so it travels with the writer's books.
+// (Languages beyond US English: idea and dictionary set from Zaim Halili.)
 // ---------------------------------------------------------------------------
-let neoSpell = null;
+let spellLanguage = 'en-US';
+const SPELL_LANGUAGES = {
+  'en-US': { label: 'English (US)', pkg: 'dictionary-en-us' },
+  'en-GB': { label: 'English (UK)', pkg: 'dictionary-en-gb' },
+  'en-CA': { label: 'English (Canada)', pkg: 'dictionary-en-ca' },
+  'en-AU': { label: 'English (Australia)', pkg: 'dictionary-en-au' },
+  'fr': { label: 'French', pkg: 'dictionary-fr' },
+  'es': { label: 'Spanish', pkg: 'dictionary-es' },
+  'de': { label: 'German', pkg: 'dictionary-de' }
+};
 
-function initSpell() {
+// The dictionary work runs in a helper process (spell-worker.js): parsing
+// French takes seconds, and the writing room must never wait for it.
+let spellChild = null;
+let spellSeq = 0;
+const spellWaiting = new Map();
+
+function spellRequest(msg) {
+  return new Promise((resolve) => {
+    if (!spellChild) { resolve({ ok: false, error: 'no spell process' }); return; }
+    const id = ++spellSeq;
+    spellWaiting.set(id, resolve);
+    spellChild.postMessage({ ...msg, id });
+  });
+}
+
+function startSpellProcess() {
+  if (spellChild) return;
   try {
-    const nspell = require('nspell');
-    require('dictionary-en-us')((err, dict) => {
-      if (err) { logError('spell', err); return; }
-      neoSpell = nspell(dict);
-      try {
-        const lib = readJSON(LIBRARY_FILE, {});
-        for (const w of lib.customWords || []) neoSpell.add(w);
-      } catch { /* custom words are a nicety */ }
+    spellChild = utilityProcess.fork(path.join(__dirname, 'spell-worker.js'), [], { serviceName: 'NEO spellcheck' });
+    spellChild.on('message', (m) => {
+      const done = spellWaiting.get(m.id);
+      if (done) { spellWaiting.delete(m.id); done(m); }
+    });
+    spellChild.on('exit', () => {
+      spellChild = null;
+      for (const done of spellWaiting.values()) done({ ok: false, error: 'spell process exited' });
+      spellWaiting.clear();
     });
   } catch (err) {
     logError('spell', err);
+    spellChild = null;
   }
 }
 
-ipcMain.handle('spell:check', (_e, words) => {
+// The dictionary packages differ in how they export (callback, ES module),
+// so the helper reads their .aff/.dic files directly — the one shape they
+// all share. (Not require.resolve: the newer packages seal package.json.)
+async function loadSpellDictionary(code) {
+  const known = SPELL_LANGUAGES[code] ? code : 'en-US';
+  const entry = SPELL_LANGUAGES[known];
+  startSpellProcess();
+  let custom = [];
+  try { custom = readJSON(LIBRARY_FILE, {}).customWords || []; } catch { /* a nicety */ }
+  const res = await spellRequest({ type: 'load', dir: path.join(__dirname, 'node_modules', entry.pkg), custom });
+  if (!res.ok) { logError('spell', new Error(res.error || 'dictionary failed to load')); return false; }
+  spellLanguage = known;
+  return true;
+}
+
+function initSpell() {
+  let code = 'en-US';
+  try { code = readJSON(LIBRARY_FILE, {}).spellLanguage || 'en-US'; } catch { /* fresh library */ }
+  loadSpellDictionary(code);
+}
+
+ipcMain.handle('spell:setLanguage', async (_e, code) => {
+  if (!SPELL_LANGUAGES[code]) return false;
+  const ok = await loadSpellDictionary(code);
+  if (ok) { try { buildMenu(); } catch (err) { logError('menu', err); } }
+  return ok;
+});
+
+ipcMain.handle('spell:check', async (_e, words) => {
+  const res = await spellRequest({ type: 'check', words });
+  if (res.ok) return res.result;
   const out = {};
-  // dictionary still loading: report everything correct rather than crying wolf
-  for (const w of words) out[w] = neoSpell ? neoSpell.correct(w) : true;
+  for (const w of words) out[w] = true; // no checker: nothing is wrong
   return out;
 });
 
-ipcMain.handle('spell:suggest', (_e, word) => (neoSpell ? neoSpell.suggest(word).slice(0, 6) : []));
+ipcMain.handle('spell:suggest', async (_e, word) => {
+  const res = await spellRequest({ type: 'suggest', word });
+  return res.ok ? res.result : [];
+});
 
-ipcMain.handle('spell:learn', (_e, word) => {
-  if (neoSpell && typeof word === 'string') neoSpell.add(word);
+ipcMain.handle('spell:learn', async (_e, word) => {
+  if (typeof word === 'string') await spellRequest({ type: 'add', word });
   return true;
 });
 
@@ -846,20 +956,39 @@ const rich = (cmd) => () => sendToWindow({ type: 'rich', cmd });
 
 // the renderer owns these settings (they live in library.json); the menu
 // just mirrors them
+// (kept here too, because the menu is rebuilt whenever the poetry tick moves)
+const menuChecks = { mdShortcuts: true, fmtBarPinned: false };
 ipcMain.handle('menu:setChecked', (_e, states) => {
   const menu = Menu.getApplicationMenu();
   for (const [id, on] of Object.entries(states || {})) {
+    if (id in menuChecks) menuChecks[id] = !!on;
     const item = menu && menu.getMenuItemById(id);
     if (item) item.checked = !!on;
   }
   return true;
 });
 
+
+// whether the caret is in a poetry paragraph — the Format menu's tick
+let poetryState = false;
+ipcMain.on('poetry:state', (_e, on) => {
+  on = !!on;
+  if (on === poetryState) return;
+  poetryState = on;
+  try { buildMenu(); } catch (err) { logError('menu', err); }
+});
+
 function buildMenu() {
   const isMac = process.platform === 'darwin';
+  const isWin = process.platform === 'win32';
+  // macOS and Windows name faces that ship with the OS. Linux has none of
+  // them, so the menu names the faces bundled in fonts/ (see styles.css).
+  // The Windows list stays the one the renderer already understands.
   const bodyFonts = isMac
     ? ['Georgia', 'Palatino', 'Baskerville', 'Hoefler Text', 'Iowan Old Style']
-    : ['Georgia', 'Palatino', 'Baskerville', 'Cambria', 'Constantia'];
+    : isWin
+      ? ['Georgia', 'Palatino', 'Baskerville', 'Cambria', 'Constantia']
+      : ['Gelasio', 'TeX Gyre Pagella', 'Libre Baskerville', 'Alegreya', 'Source Serif Pro'];
   const template = [
     // appMenu exists only on macOS — including it on Windows throws,
     // which is exactly what kept NEO from ever opening a window there
@@ -897,6 +1026,7 @@ function buildMenu() {
           accelerator: 'CmdOrCtrl+Shift+I',
           click: () => sendToWindow({ type: 'import' })
         },
+        { label: 'Library Folder…', click: () => { chooseLibraryFolder().catch((err) => logError('library folder', err)); } },
         { type: 'separator' },
         ...(isMac ? [{ role: 'close' }] : [{ role: 'quit' }])
       ]
@@ -918,6 +1048,15 @@ function buildMenu() {
           label: 'Spellcheck Pass',
           accelerator: 'CmdOrCtrl+;',
           click: () => sendToWindow({ type: 'spellcheck' })
+        },
+        {
+          label: 'Spellcheck Language',
+          submenu: Object.entries(SPELL_LANGUAGES).map(([code, lang]) => ({
+            label: lang.label,
+            type: 'radio',
+            checked: spellLanguage === code,
+            click: () => sendToWindow({ type: 'spellLanguage', value: code })
+          }))
         }
       ]
     },
@@ -926,10 +1065,14 @@ function buildMenu() {
       submenu: [
         {
           label: 'Body Font',
-          submenu: bodyFonts.map((f) => ({
-            label: f,
-            click: () => sendToWindow({ type: 'bodyFont', value: f })
-          }))
+          submenu: [
+            ...bodyFonts.map((f) => ({
+              label: f,
+              click: () => sendToWindow({ type: 'bodyFont', value: f })
+            })),
+            { type: 'separator' },
+            { label: 'Other Font…', click: () => sendToWindow({ type: 'bodyFontPick' }) }
+          ]
         },
         {
           label: 'Drop Cap Style',
@@ -993,15 +1136,15 @@ function buildMenu() {
           id: 'mdShortcuts',
           label: 'Markdown Shortcuts While Typing',
           type: 'checkbox',
-          checked: true,
-          click: (item) => sendToWindow({ type: 'mdShortcuts', value: item.checked })
+          checked: menuChecks.mdShortcuts,
+          click: (item) => { menuChecks.mdShortcuts = item.checked; sendToWindow({ type: 'mdShortcuts', value: item.checked }); }
         },
         {
           id: 'fmtBarPinned',
           label: 'Keep Formatting Bar Visible',
           type: 'checkbox',
-          checked: false,
-          click: (item) => sendToWindow({ type: 'fmtBarPinned', value: item.checked })
+          checked: menuChecks.fmtBarPinned,
+          click: (item) => { menuChecks.fmtBarPinned = item.checked; sendToWindow({ type: 'fmtBarPinned', value: item.checked }); }
         },
         { type: 'separator' },
         { label: 'Larger Text', accelerator: 'CmdOrCtrl+=', click: () => sendToWindow({ type: 'fontSize', value: 1 }) },
@@ -1012,6 +1155,15 @@ function buildMenu() {
           label: 'Typewriter Scrolling',
           accelerator: 'CmdOrCtrl+Shift+T',
           click: () => sendToWindow({ type: 'typewriter' })
+        },
+        { type: 'separator' },
+        // ticks when the caret sits in a poetry paragraph; ⇧Enter is the
+        // editor's own key, so no accelerator here
+        {
+          label: 'Poetry Paragraph\t⇧Enter',
+          type: 'checkbox',
+          checked: poetryState,
+          click: () => sendToWindow({ type: 'poetry' })
         }
       ]
     },
@@ -1158,7 +1310,11 @@ app.whenReady().then(() => {
   try {
     // the real Documents folder (handles OneDrive-redirected Windows setups)
     try {
-      LIBRARY_DIR = process.env.NEO_LIBRARY_DIR || path.join(app.getPath('documents'), 'NEO Library');
+      LIBRARY_DIR = path.join(app.getPath('documents'), 'NEO Library');
+      if (process.env.NEO_LIBRARY_DIR) LIBRARY_DIR = process.env.NEO_LIBRARY_DIR; // a test or alternate library
+      // …unless the writer chose their own folder (File → Library Folder…)
+      const chosen = readSettings().libraryDir;
+      if (chosen && !process.env.NEO_LIBRARY_DIR && fs.existsSync(chosen) && fs.statSync(chosen).isDirectory()) LIBRARY_DIR = chosen;
       LIBRARY_FILE = path.join(LIBRARY_DIR, 'library.json');
     } catch (err) {
       logError('paths', err);

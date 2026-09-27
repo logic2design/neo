@@ -13,7 +13,7 @@
 /*  The block model                                                    */
 /*                                                                     */
 /*  run    {text, b, i, s, code, href} · {mark: sid} (placeholder flag) */
-/*  p      {type:'p', runs, align}                                     */
+/*  p      {type:'p', runs, align, poetry}   poetry: NEO's ⇧Enter lines */
 /*  break  {type:'break'}                     the *** scene break      */
 /*  heading{type:'heading', level 1-3 (raw 1-6 while importing), runs} */
 /*  quote  {type:'quote', blocks}                                      */
@@ -238,15 +238,24 @@ function imageBlock(img, ctx) {
 }
 
 // a paragraph's runs, split wherever a picture sits inside it
-function paragraphBlocks(runs, align, ctx, type = 'p') {
+function paragraphBlocks(runs, align, ctx, type = 'p', poetry = false) {
   const blocks = [];
   let cur = [];
   const end = () => {
     const r = tidyRuns(cur, { trim: ctx.loose || ctx.trim });
-    if (runsHaveContent(r)) blocks.push({ type, runs: r, align });
+    if (runsHaveContent(r)) blocks.push(poetry ? { type, runs: r, align, poetry: true } : { type, runs: r, align });
     cur = [];
   };
   for (const r of runs) {
+    // Word, Apple Notes and Google Docs mark a paragraph with a line break
+    // as often as with a block, so in pasted text every break is a paragraph
+    if (ctx.loose && !poetry && r.text && r.text.includes('\n')) {
+      r.text.split('\n').forEach((piece, k) => {
+        if (k > 0) end();
+        if (piece) cur.push({ ...r, text: piece });
+      });
+      continue;
+    }
     if (r.imgEl) {
       end();
       const ib = imageBlock(r.imgEl, ctx);
@@ -351,7 +360,7 @@ function blockFromEl(el, ctx, fmt) {
   switch (tag) {
     case 'P':
       if (el.classList.contains('scene-break')) return [{ type: 'break' }];
-      return paragraphBlocks(collectRuns(el, elFmt(el, fmt), ctx), alignOf(el), ctx);
+      return paragraphBlocks(collectRuns(el, elFmt(el, fmt), ctx), alignOf(el), ctx, 'p', el.classList.contains('poetry'));
     case 'H1': case 'H2': case 'H3': case 'H4': case 'H5': case 'H6': {
       const runs = tidyRuns(collectRuns(el, fmt, ctx), { trim: true });
       if (!runsHaveContent(runs)) return [];
@@ -497,7 +506,7 @@ function blocksToEditorHtml(blocks) {
     `${it.children.map((c) => listHtml(c, o, item)).join('')}</li>`;
   return blocks.map((b) => {
     switch (b.type) {
-      case 'p': return `<p${b.align ? ` style="text-align:${b.align}"` : ''}>${runsHtml(b.runs, o) || '<br>'}</p>`;
+      case 'p': return `<p${b.poetry ? ' class="poetry"' : ''}${b.align ? ` style="text-align:${b.align}"` : ''}>${runsHtml(b.runs, o) || '<br>'}</p>`;
       case 'break': return '<p class="scene-break">***</p>';
       case 'heading': {
         const l = clampLevel(b.level);
@@ -1238,7 +1247,7 @@ function blocksToTxt(blocks, indent = '') {
   const ind = (s) => s.split('\n').map((l) => (l ? indent + l : l)).join('\n');
   return blocks.map((b) => {
     switch (b.type) {
-      case 'p': return ind(runsToTxt(b.runs));
+      case 'p': return ind((b.poetry ? '    ' : '') + runsToTxt(b.runs));
       case 'break': return indent + '***';
       case 'heading': {
         const t = runsToTxt(b.runs);
@@ -1330,7 +1339,7 @@ function tableToMd(b) {
 function blocksToMd(blocks, ctx, headOffset = 2) {
   return blocks.map((b) => {
     switch (b.type) {
-      case 'p': return mdLineSafe(runsToMd(b.runs));
+      case 'p': return (b.poetry ? '> ' : '') + mdLineSafe(runsToMd(b.runs));
       case 'break': return '***';
       case 'heading': return '#'.repeat(Math.min(6, clampLevel(b.level) + headOffset)) + ' ' + runsToMd(b.runs).replace(/\\\n/g, ' ');
       case 'quote': return blocksToMd(b.blocks, ctx, headOffset).split('\n').map((l) => (l ? '> ' + l : '>')).join('\n');
@@ -1385,7 +1394,8 @@ function blocksToHtml(blocks, ctx) {
     switch (b.type) {
       case 'p': {
         const cls = [];
-        if (wasFirst) cls.push('first');
+        if (b.poetry) { cls.push('poetry'); ctx.first = wasFirst; } // the opener is the first line that isn't poetry
+        else if (wasFirst) cls.push('first');
         if (b.align) cls.push(b.align);
         return `<p${cls.length ? ` class="${cls.join(' ')}"` : ''}>${runsHtml(b.runs, o)}</p>`;
       }
@@ -1443,7 +1453,10 @@ const RICH_EXPORT_CSS = `
   p.center { text-align: center; text-indent: 0; }
   p.right { text-align: right; text-indent: 0; }
   p.justify { text-align: justify; }
-  h3, h4, h5, h6 { font-weight: bold; margin: 1.4em 0 0.5em; line-height: 1.3; }`;
+  h3, h4, h5, h6 { font-weight: bold; margin: 1.4em 0 0.5em; line-height: 1.3; }
+  p.poetry { text-indent: 0 !important; margin: 0 2.5em; }
+  p:not(.poetry) + p.poetry, h1 + p.poetry, h2 + p.poetry { margin-top: 0.9em; }
+  p.poetry + p:not(.poetry) { margin-top: 0.9em; }`;
 
 // opts: {cover, stamp, img(b) → src}. Default pictures load from disk
 // (fine for PDF and email, which print from this Mac).
@@ -1537,7 +1550,7 @@ function docxPPr(o = {}) {
     (o.num ? `<w:numPr><w:ilvl w:val="${o.num.lvl}"/><w:numId w:val="${o.num.id}"/></w:numPr>` : '') +
     (o.border ? '<w:pBdr><w:bottom w:val="single" w:sz="6" w:space="1" w:color="A8A29A"/></w:pBdr>' : '') +
     (o.spaceBefore != null || o.spaceAfter != null ? `<w:spacing${o.spaceBefore != null ? ` w:before="${o.spaceBefore}"` : ''}${o.spaceAfter != null ? ` w:after="${o.spaceAfter}"` : ''} w:line="360" w:lineRule="auto"/>` : '') +
-    (o.indent ? '<w:ind w:firstLine="480"/>' : '') +
+    (o.poetry ? '<w:ind w:left="720" w:right="720"/>' : o.indent ? '<w:ind w:firstLine="480"/>' : '') +
     (o.align ? `<w:jc w:val="${o.align === 'justify' ? 'both' : o.align}"/>` : '') +
     '</w:pPr>';
 }
@@ -1556,7 +1569,8 @@ async function docxBlocks(blocks, ctx, inQuote = false) {
     switch (b.type) {
       case 'p': {
         const center = b.align === 'center' || b.align === 'right';
-        out.push(docxPara(docxRuns(b.runs, ctx), inQuote ? { style: 'Quote', align: b.align } : { indent: !center, align: b.align }));
+        out.push(docxPara(docxRuns(b.runs, ctx), inQuote ? { style: 'Quote', align: b.align }
+          : b.poetry ? { poetry: true, align: center ? b.align : '' } : { indent: !center, align: b.align }));
         break;
       }
       case 'break': out.push(docxPara(docxRun({ text: '***' }), { align: 'center', spaceBefore: 240 })); break;
@@ -1729,7 +1743,7 @@ ${body}
 async function buildEpubEntries(data) {
   const d = data || bookExportData();
   const chapters = d.sections;
-  const uuid = 'urn:uuid:neo-' + d.id;
+  const uuid = 'urn:uuid:' + (d.uuid || crypto.randomUUID());
   const modified = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
 
   // pictures go inside the book; a reader has no way to reach this Mac
@@ -1782,7 +1796,7 @@ async function buildEpubEntries(data) {
 <dc:identifier id="bookid">${uuid}</dc:identifier>
 <dc:title>${escXml(d.title)}</dc:title>
 <dc:creator>${escXml(d.author)}</dc:creator>
-<dc:language>en</dc:language>
+<dc:language>${escXml(d.language || 'en')}</dc:language>
 <meta property="dcterms:modified">${modified}</meta>
 <meta name="cover" content="cover-image"/>
 </metadata>
@@ -2008,7 +2022,7 @@ function textAfter(el) {
   return r.toString();
 }
 
-function placeCaret(el, off = Infinity) {
+function richPlaceCaret(el, off = Infinity) {
   const root = el.closest(RICH_EDITABLE);
   if (root && document.activeElement !== root) root.focus({ preventScroll: true });
   const s = window.getSelection();
@@ -2049,10 +2063,10 @@ function richCaretSave(root) {
 function richCaretRestore(root, c) {
   if (!c) return;
   // the block itself usually survives surgery (it was only moved)
-  if (c.el && c.el.isConnected && root.contains(c.el)) { placeCaret(c.el, c.off); return; }
+  if (c.el && c.el.isConnected && root.contains(c.el)) { richPlaceCaret(c.el, c.off); return; }
   const all = [...root.querySelectorAll(CARET_BLOCKS)];
   const blk = all[c.idx] || all[all.length - 1];
-  if (blk) placeCaret(blk, c.off);
+  if (blk) richPlaceCaret(blk, c.off);
 }
 
 // the page changed without an input event: save it
@@ -2076,8 +2090,8 @@ function structural(root, label, fn) {
   }
   const place = fn();
   richNormalize(root);
-  if (Array.isArray(place)) placeCaret(place[0], place[1]);
-  else if (place instanceof Element) placeCaret(place);
+  if (Array.isArray(place)) richPlaceCaret(place[0], place[1]);
+  else if (place instanceof Element) richPlaceCaret(place);
   else richCaretRestore(root, caret);
   touched(root);
   if (chId) { resetNativeUndo(); breakRun++; }
@@ -2700,7 +2714,7 @@ function moveCell(root, cell, dir) {
     });
     return;
   }
-  if (target) placeCaret(target);
+  if (target) richPlaceCaret(target);
 }
 
 function tableRowLike(tr, header) {
@@ -3194,7 +3208,7 @@ async function openTableDialog(root) {
   }));
   const t = insertBlocksDom(root, [{ type: 'table', rows }]);
   // caret into the first cell, ready to type
-  if (t && t.tagName === 'TABLE' && t.rows[0]) placeCaret(t.rows[0].cells[0], 0);
+  if (t && t.tagName === 'TABLE' && t.rows[0]) richPlaceCaret(t.rows[0].cells[0], 0);
 }
 
 /* ================================================================== */
@@ -3390,7 +3404,7 @@ linkCard.addEventListener('mousedown', (e) => {
   if (!b || !a) return;
   const root = a.closest(RICH_EDITABLE);
   if (b.dataset.a === 'open') openHref(a.getAttribute('href'));
-  if (b.dataset.a === 'edit' && root) { placeCaret(a, 1); hideLinkCard(); openLinkDialog(root); }
+  if (b.dataset.a === 'edit' && root) { richPlaceCaret(a, 1); hideLinkCard(); openLinkDialog(root); }
   if (b.dataset.a === 'unlink' && root) {
     const r = document.createRange();
     r.selectNodeContents(a);
@@ -3904,9 +3918,17 @@ function chapterizeBlocks(blocks, name, meta = {}) {
   const numeralMode = blocks.filter((b) => isNumeralish(plain(b))).length >= 2;
   const isHeading = (b) => {
     const t = plain(b);
-    return !!t && ((/^(chapter|prologue|epilogue|part)\b/i.test(t) && t.length < 60) || (numeralMode && isNumeralish(t)));
+    return !!t && (chapterHeads.has(b) || (/^(chapter|prologue|epilogue|part)\b/i.test(t) && t.length < 60) || (numeralMode && isNumeralish(t)));
   };
   const isBreak = (b) => b.type === 'break' || (b.type === 'p' && /^\s*([*#•~⁂—–-]\s*){1,7}$/.test(plain(b)));
+  // Headings start chapters and title them (as in NEO 0.8.1) — the
+  // document's top heading level, when it's used more than once. A lone
+  // leading "# Title" is the book's title, and deeper headings stay put.
+  const allHeads = blocks.filter((b) => b.type === 'heading' && !b.title);
+  const lead = allHeads[0] && allHeads[0] === blocks[0] && allHeads.filter((h) => h.level === allHeads[0].level).length === 1 ? allHeads[0] : null;
+  const rest = allHeads.filter((h) => h !== lead);
+  const top = rest.length ? Math.min(...rest.map((h) => h.level)) : 0;
+  const chapterHeads = new Set(rest.filter((h) => h.level === top).length >= 2 ? rest.filter((h) => h.level === top) : []);
 
   const chapterize = (usePageBreaks) => {
     const chapters = [];
@@ -3918,7 +3940,11 @@ function chapterizeBlocks(blocks, name, meta = {}) {
         chapters.push(cur);
         cur = { title: '', blocks: [] };
       }
-      if (head) { if (!cur.blocks.length) cur.title = chapterTitleOf(plain(b)); continue; } // NEO numbers chapters itself
+      if (head) {
+        // "Chapter 3 — The Storm" gives "The Storm"; any other heading is the title itself
+        if (!cur.blocks.length) cur.title = /^(chapter|prologue|epilogue|part)\b/i.test(plain(b)) || isNumeralish(plain(b)) ? chapterTitleOf(plain(b)) : plain(b);
+        continue;
+      }
       if (isBreak(b)) { cur.blocks.push({ type: 'break' }); continue; }
       cur.blocks.push(b);
     }

@@ -150,7 +150,7 @@ async function loadLibrary() {
 function showFirstRun() {
   const fr = $('#firstrun');
   fr.hidden = false;
-  let picked = { body: 'Georgia', dropcap: 'literary' };
+  let picked = { body: Object.keys(BODY_FONTS)[0] || 'Georgia', dropcap: 'literary' };
 
   // Step 1: who are you, and how do you write?
   $$('.fr-choice').forEach((btn) => {
@@ -173,7 +173,7 @@ function showFirstRun() {
   function buildFontStep() {
     const bodyRow = $('#fr-bodyfonts');
     bodyRow.innerHTML = '';
-    for (const name of Object.keys(BODY_FONTS)) {
+    for (const name of BODY_FONT_CHOICES) {
       const b = document.createElement('button');
       b.className = 'fr-font' + (picked.body === name ? ' sel' : '');
       b.textContent = name;
@@ -955,7 +955,11 @@ function renderChapters() {
       head.classList.toggle('has-title', titleSpan.textContent.trim() !== '');
     });
     titleSpan.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); titleSpan.blur(); }
+      if (e.key === 'Enter' && e.shiftKey) {
+        e.preventDefault();
+        titleSpan.blur();
+        poetryUnderHeading(sec.querySelector('.chapter-body'), chId);
+      } else if (e.key === 'Enter') { e.preventDefault(); titleSpan.blur(); }
       e.stopPropagation();
     });
     titleSpan.addEventListener('blur', () => {
@@ -1080,6 +1084,8 @@ function wireChapterBody(body, chId) {
       if (destructive) healSelectionSeams(body);
     }
     if (styleKeepScroll(e)) return;
+    if (handlePoetry(e, body, chId)) return;
+    if (poetryBackspace(e, body, chId)) return;
     if (richKeydown(e, body)) return;
     if (sceneBreakDelete(e, body, chId)) return;
     if (spaceSafeDelete(e, body, chId)) return;
@@ -1447,6 +1453,32 @@ function handleEnter(e, body, chId) {
   const block = el && el.closest ? el.closest('p') : null;
   if (!block || !body.contains(block) || block.parentElement !== body) return false;
   if (block.classList.contains('scene-break')) { e.preventDefault(); return true; } // Enter on a *** line: nothing
+  // Enter in a poetry paragraph steps back into prose: an empty line becomes
+  // an ordinary paragraph in place; otherwise the line splits and the new
+  // paragraph is plain (⇧Enter is how the poem continues)
+  if (block.classList.contains('poetry')) {
+    e.preventDefault();
+    enterRun = 0;
+    if (block.textContent.trim() === '') {
+      snapshotStructure('poetry paragraph to prose');
+      block.classList.remove('poetry');
+      romanize(block);
+      placeCaret(block, 0);
+      syncChapter(body, chId);
+      resetNativeUndo();
+      breakRun++;
+      return true;
+    }
+    document.execCommand('insertParagraph');
+    const cur = caretBlock(body);
+    if (cur && cur !== block) {
+      cur.classList.remove('poetry');
+      romanize(cur);
+      placeCaret(cur, 0);
+    }
+    syncChapter(body, chId);
+    return true;
+  }
   const prev = block.previousElementSibling;
 
   if (block.textContent.trim() !== '') {
@@ -1531,6 +1563,175 @@ function handleEnter(e, body, chId) {
   return false;
 }
 
+/* ================================================================== */
+/*  POETRY PARAGRAPHS — ⇧Enter                                         */
+/*  A paragraph pulled in from the margins, italic: a stanza of verse,  */
+/*  a quote, a POV name under the chapter heading. One class, one key.  */
+/* ================================================================== */
+
+// the paragraph holding the caret, if it belongs to this chapter body
+function caretBlock(body) {
+  const sel = window.getSelection();
+  if (!sel || !sel.rangeCount) return null;
+  let el = sel.anchorNode;
+  if (el && el.nodeType === Node.TEXT_NODE) el = el.parentElement;
+  const block = el && el.closest ? el.closest('p') : null;
+  return block && body.contains(block) ? block : null;
+}
+
+// A poetry paragraph is born italic — real <i> markup, so ⌘I can take it
+// off a word — and sheds that default italic when it returns to prose.
+function italicize(p) {
+  if (p.textContent.trim() === '') { p.innerHTML = '<i><br></i>'; return; }
+  const kids = [...p.childNodes].filter((n) => !(n.nodeType === Node.TEXT_NODE && !n.textContent.trim()));
+  if (kids.length === 1 && kids[0].nodeType === Node.ELEMENT_NODE && kids[0].tagName === 'I') return;
+  const i = document.createElement('i');
+  while (p.firstChild) i.appendChild(p.firstChild);
+  p.appendChild(i);
+}
+function romanize(p) {
+  const kids = [...p.childNodes].filter((n) => !(n.nodeType === Node.TEXT_NODE && !n.textContent.trim()));
+  if (kids.length !== 1 || kids[0].nodeType !== Node.ELEMENT_NODE || kids[0].tagName !== 'I') return;
+  const i = kids[0];
+  while (i.firstChild) i.before(i.firstChild);
+  i.remove();
+  if (p.textContent.trim() === '' && !p.querySelector('br')) p.innerHTML = '<br>';
+}
+// caret at the start of a paragraph's text — inside its italic when it has one
+function caretIntoStart(p) {
+  const i = p.firstElementChild && p.firstElementChild.tagName === 'I' ? p.firstElementChild : p;
+  placeCaret(i, 0);
+}
+
+function placeCaret(node, offset) {
+  const sel = window.getSelection();
+  const r = document.createRange();
+  r.setStart(node, offset);
+  r.collapse(true);
+  sel.removeAllRanges();
+  sel.addRange(r);
+}
+
+// ⇧Enter. At the end of a paragraph: a new poetry paragraph beneath it.
+// Mid-paragraph: the text after the caret becomes one. Inside a poetry
+// paragraph: another line of it, so verse flows. On a *** line: nothing.
+function handlePoetry(e, body, chId) {
+  if (e.key !== 'Enter' || !e.shiftKey || e.metaKey || e.ctrlKey || e.altKey) return false;
+  const sel = window.getSelection();
+  if (!sel.rangeCount || !sel.isCollapsed) return false;
+  const block = caretBlock(body);
+  if (!block) return false;
+  e.preventDefault();
+  if (block.classList.contains('scene-break')) return true;
+
+  if (block.classList.contains('poetry')) {
+    // the engine's own split keeps the class on the new line, and ⌘Z sees it
+    if (block.querySelector('span:not(.ph-mark)')) stripJunkSpans(block);
+    document.execCommand('insertParagraph');
+    const cur = caretBlock(body);
+    if (cur) {
+      cur.classList.add('poetry');
+      if (cur.textContent.trim() === '' && !cur.querySelector('i')) { italicize(cur); caretIntoStart(cur); }
+    }
+    syncChapter(body, chId);
+    return true;
+  }
+
+  snapshotStructure('poetry paragraph');
+  const r = sel.getRangeAt(0);
+  const tail = document.createRange();
+  tail.selectNodeContents(block);
+  try { tail.setStart(r.startContainer, r.startOffset); } catch { return true; }
+  const after = tail.toString();
+  const empty = block.textContent.trim() === '';
+  const atStart = after.length === block.textContent.length;
+  if (empty || atStart) {
+    // an empty paragraph, or the caret at its very start: the whole paragraph turns to poetry
+    block.classList.add('poetry');
+    italicize(block);
+    caretIntoStart(block);
+  } else {
+    const line = document.createElement('p');
+    line.className = 'poetry';
+    if (after.trim() !== '') {
+      line.appendChild(tail.extractContents());
+      for (const junk of line.querySelectorAll('br')) junk.remove();
+      if (!block.textContent.trim()) block.innerHTML = '<br>';
+    }
+    italicize(line);
+    block.after(line);
+    caretIntoStart(line);
+  }
+  syncChapter(body, chId);
+  resetNativeUndo();
+  breakRun++;
+  return true;
+}
+
+// Backspace at the very start of a poetry paragraph makes it prose again —
+// the second Backspace then merges it upward like any paragraph
+function poetryBackspace(e, body, chId) {
+  if (e.key !== 'Backspace' || e.metaKey || e.ctrlKey || e.altKey) return false;
+  const sel = window.getSelection();
+  if (!sel.rangeCount || !sel.isCollapsed) return false;
+  const block = caretBlock(body);
+  if (!block || !block.classList.contains('poetry')) return false;
+  const r = sel.getRangeAt(0);
+  const head = document.createRange();
+  head.selectNodeContents(block);
+  try { head.setEnd(r.startContainer, r.startOffset); } catch { return false; }
+  if (head.toString().length !== 0) return false;
+  e.preventDefault();
+  snapshotStructure('poetry paragraph to prose');
+  block.classList.remove('poetry');
+  romanize(block);
+  placeCaret(block, 0);
+  syncChapter(body, chId);
+  resetNativeUndo();
+  breakRun++;
+  return true;
+}
+
+// Format → Poetry Paragraph: toggles every paragraph the selection touches
+function togglePoetry() {
+  const sel = window.getSelection();
+  if (!sel.rangeCount) { toast('Click into a paragraph first'); return; }
+  const r = sel.getRangeAt(0);
+  let el = r.startContainer;
+  if (el.nodeType === Node.TEXT_NODE) el = el.parentElement;
+  const body = el && el.closest ? el.closest('.chapter-body') : null;
+  if (!body) { toast('Click into a paragraph first'); return; }
+  const chId = body.closest('.chapter').dataset.id;
+  const ps = [...body.querySelectorAll('p')].filter(
+    (p) => r.intersectsNode(p) && !p.classList.contains('scene-break')
+  );
+  if (!ps.length) return;
+  snapshotStructure('poetry paragraph');
+  const on = !ps.every((p) => p.classList.contains('poetry'));
+  for (const p of ps) {
+    p.classList.toggle('poetry', on);
+    if (on) italicize(p); else romanize(p);
+  }
+  caretIntoStart(ps[0]);
+  syncChapter(body, chId);
+  resetNativeUndo();
+  breakRun++;
+}
+
+// ⇧Enter from the chapter title: a poetry paragraph above the opening one
+function poetryUnderHeading(body, chId) {
+  const line = document.createElement('p');
+  line.className = 'poetry';
+  italicize(line);
+  snapshotStructure('poetry paragraph');
+  body.prepend(line);
+  body.focus();
+  caretIntoStart(line);
+  syncChapter(body, chId);
+  resetNativeUndo();
+  breakRun++;
+}
+
 // Backspace just below a *** (or Delete just above one) removes the break
 // itself — prose never merges into the break's styled paragraph
 function sceneBreakDelete(e, body, chId) {
@@ -1579,6 +1780,7 @@ function syncChapter(body, chId) {
 // Heal text-node fragmentation in each paragraph as the caret leaves it:
 let lastCaretPara = null;
 let capOffBody = null;
+let menuPoetryState = false;
 document.addEventListener('selectionchange', () => {
   if (!book || currentTab !== 'manuscript') return;
   const sel = window.getSelection();
@@ -1601,8 +1803,13 @@ document.addEventListener('selectionchange', () => {
     if (ch) scanSpellingIn(ch.querySelector('.chapter-body'), ch.dataset.id);
   }
   // the drop cap steps aside while the caret is in the first paragraph
+  const inPoetry = !!(caretP && caretP.classList.contains('poetry'));
+  if (inPoetry !== menuPoetryState && window.neo.poetryState) {
+    menuPoetryState = inPoetry;
+    window.neo.poetryState(inPoetry);
+  }
   const inFirst = caretP && caretP.parentElement &&
-    caretP === caretP.parentElement.querySelector(':scope > p');
+    caretP === caretP.parentElement.querySelector(':scope > p:not(.poetry)');
   const capBody = inFirst ? caretP.parentElement : null;
   if (capBody !== capOffBody) {
     if (capOffBody && capOffBody.isConnected) capOffBody.classList.remove('cap-off');
@@ -3045,6 +3252,7 @@ function rejoinAtCaret() {
   const prev = blk.previousElementSibling;
   if (!prev || prev.tagName !== 'P') return;
   if (prev.classList.contains('scene-break') || blk.classList.contains('scene-break')) return;
+  if (prev.classList.contains('poetry') !== blk.classList.contains('poetry')) return;
   const chId = body.closest('.chapter').dataset.id;
   const at = prev.textContent.length;
   if (blk.textContent.trim() === '') {
@@ -3303,6 +3511,7 @@ async function addImportedBooks(results, shelf) {
       const blocks = await materializeImages(ch.blocks, meta.id);
       const html = blocksToEditorHtml(blocks) || '<p><br></p>';
       await window.neo.writeChapter(meta.id, chId, html);
+      if (ch.title) meta.chapterTitles[chId] = ch.title;
       meta.chapterOrder.push(chId);
       if (ch.title) meta.chapterTitles[chId] = ch.title;
       words += blocksWordCount(blocks);
@@ -3350,7 +3559,9 @@ async function spellScanEl(el, key) {
   spellScanned.add(key);
   const occurrences = [];
   const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-  const re = /[A-Za-z'’]+/g;
+  // letters of any alphabet, with their accents, so French and German
+  // words reach the dictionary whole
+  const re = /[\p{L}\p{M}'’]+/gu;
   let n;
   while ((n = walker.nextNode())) {
     const p = n.parentElement;
@@ -3360,7 +3571,7 @@ async function spellScanEl(el, key) {
     while ((m = re.exec(n.data))) {
       const word = spellNorm(m[0]);
       if (word.length < 2) continue;
-      if (/^[A-Z'’]+$/.test(m[0])) continue; // acronyms and shouting are legal
+      if (/^[\p{Lu}'’]+$/u.test(m[0])) continue; // acronyms and shouting are legal
       occurrences.push({ node: n, start: m.index, end: m.index + m[0].length, word });
     }
   }
@@ -3425,6 +3636,27 @@ function toggleSpellcheck() {
   toast(spellOn ? 'Spellcheck on' : 'Spellcheck off');
 }
 
+// Edit → Spellcheck Language: swap the dictionary, remember the choice with
+// the library, and re-check whatever is on screen
+const SPELL_LANGUAGE_NAMES = {
+  'en-US': 'US English', 'en-GB': 'UK English', 'en-CA': 'Canadian English',
+  'en-AU': 'Australian English', fr: 'French', es: 'Spanish', de: 'German'
+};
+async function changeSpellLanguage(code) {
+  const ok = await window.neo.setSpellLanguage(code);
+  if (!ok) { toast('That dictionary would not load'); return; }
+  library.spellLanguage = code;
+  await window.neo.writeLibrary(library);
+  spellCache.clear();
+  if (spellOn) {
+    spellScanned = new Set();
+    spellRanges = new Map();
+    CSS.highlights.delete('neo-spell');
+    scanSpellingHere();
+  }
+  toast('Spellcheck: ' + (SPELL_LANGUAGE_NAMES[code] || code));
+}
+
 // right-click a flagged word for suggestions
 document.addEventListener('contextmenu', async (e) => {
   if (!spellOn) return;
@@ -3434,7 +3666,7 @@ document.addEventListener('contextmenu', async (e) => {
   if (!pos || pos.startContainer.nodeType !== Node.TEXT_NODE) return;
   const node = pos.startContainer;
   const text = node.data;
-  const isW = (c) => /[A-Za-z'’]/.test(c);
+  const isW = (c) => /[\p{L}\p{M}'’]/u.test(c);
   let a = pos.startOffset, b = pos.startOffset;
   while (a > 0 && isW(text[a - 1])) a--;
   while (b < text.length && isW(text[b])) b++;
@@ -3780,15 +4012,24 @@ const DROPCAP_FONTS = {
 const BODY_FONTS = {
   'Georgia': 'Georgia, "Times New Roman", serif',
   'Palatino': '"Palatino", "Palatino Linotype", serif',
-  'Baskerville': 'Baskerville, Georgia, serif',
+  'Baskerville': 'Baskerville, "Baskerville Old Face", Georgia, serif',
   'Hoefler Text': '"Hoefler Text", Georgia, serif',
-  'Iowan Old Style': '"Iowan Old Style", Georgia, serif'
+  'Iowan Old Style': '"Iowan Old Style", Georgia, serif',
+  'Cambria': 'Cambria, Georgia, serif',
+  'Constantia': 'Constantia, Georgia, serif'
 };
+
+// Hoefler Text and Iowan Old Style ship only with macOS; elsewhere they
+// would fall back to Georgia, so offer the fonts Windows actually has.
+// Keep in step with bodyFonts in main.js.
+const BODY_FONT_CHOICES = IS_MAC
+  ? ['Georgia', 'Palatino', 'Baskerville', 'Hoefler Text', 'Iowan Old Style']
+  : ['Georgia', 'Palatino', 'Baskerville', 'Cambria', 'Constantia'];
 
 function applyFonts() {
   const f = library.fonts || {};
-  if (f.body && BODY_FONTS[f.body]) {
-    document.documentElement.style.setProperty('--body-font', BODY_FONTS[f.body]);
+  if (f.body && typeof f.body === 'string') {
+    document.documentElement.style.setProperty('--body-font', bodyFontStack(f.body));
   }
   if (f.dropcap && DROPCAP_FONTS[f.dropcap]) {
     document.documentElement.style.setProperty('--dropcap-font', DROPCAP_FONTS[f.dropcap]);
@@ -3800,6 +4041,73 @@ function applyFonts() {
   const zoom = Math.min(1.6, Math.max(0.75, library.pageZoom || 1));
   document.documentElement.style.setProperty('--page-zoom', zoom);
   updateZoomDisplay();
+}
+
+// A built-in choice, or a font the writer picked from their own computer.
+// A library opened where that font is missing simply reads in Georgia.
+function bodyFontStack(name) {
+  return Object.hasOwn(BODY_FONTS, name) ? BODY_FONTS[name] : `"${name.replace(/["\\]/g, '')}", Georgia, serif`;
+}
+
+// Format → Body Font → Other Font…: every font installed on this computer,
+// each shown in its own face. The panel sits top right, off the undimmed
+// page, so hovering previews the font on the writer's own words. Resolves
+// to a family name, or null on cancel.
+async function pickLocalFont() {
+  let families = [];
+  try {
+    // one entry per style; names starting with "." are the system's hidden fonts
+    const faces = await window.queryLocalFonts();
+    families = [...new Set(faces.map((f) => f.family))]
+      .filter((n) => n && !n.startsWith('.'))
+      .sort((a, b) => a.localeCompare(b));
+  } catch {}
+  if (!families.length) { toast('NEO couldn’t read the fonts on this computer'); return null; }
+  return new Promise((resolve) => {
+    const bd = document.createElement('div');
+    bd.className = 'modal-backdrop font-picker';
+    bd.innerHTML = `
+      <div class="modal" style="width:320px">
+        <h2 style="font-size:16px">Other font</h2>
+        <p class="font-now" style="font-size:13px;color:var(--muted);margin-bottom:10px"></p>
+        <input type="text" spellcheck="false" placeholder="Search ${families.length} installed fonts" />
+        <div class="font-list"></div>
+        <div style="text-align:right;margin-top:14px">
+          <button class="m-cancel btn-quiet">Cancel</button>
+        </div>
+      </div>`;
+    document.body.appendChild(bd);
+    const input = bd.querySelector('input');
+    const list = bd.querySelector('.font-list');
+    const current = (library.fonts || {}).body || 'Georgia';
+    bd.querySelector('.font-now').textContent = 'Now: ' + current;
+    const done = (val) => { bd.remove(); resolve(val); };
+    const render = () => {
+      const q = input.value.trim().toLowerCase();
+      list.innerHTML = '';
+      for (const name of families) {
+        if (q && !name.toLowerCase().includes(q)) continue;
+        const b = document.createElement('button');
+        b.className = 'fr-font' + (name === current ? ' sel' : '');
+        b.textContent = name;
+        b.style.fontFamily = bodyFontStack(name);
+        b.onmouseenter = () => { document.documentElement.style.setProperty('--body-font', bodyFontStack(name)); };
+        b.onclick = () => done(name);
+        list.appendChild(b);
+      }
+    };
+    list.onmouseleave = applyFonts; // back to the saved font
+    input.oninput = render;
+    input.onkeydown = (e) => {
+      if (e.key === 'Enter' && list.firstChild) done(list.firstChild.textContent);
+      if (e.key === 'Escape') done(null);
+    };
+    bd.querySelector('.m-cancel').onclick = () => done(null);
+    render();
+    const sel = list.querySelector('.sel');
+    if (sel) sel.scrollIntoView({ block: 'center' });
+    input.focus();
+  });
 }
 
 // Pinch (trackpad) or Ctrl+scroll: page and text zoom together.
@@ -3867,6 +4175,7 @@ function showHelp() {
       <div class="help-grid">
         ${row('Enter ×2', 'Section break (***)')}
         ${row('Enter ×3', 'New chapter, auto-numbered')}
+        ${row('⇧Enter', 'Poetry paragraph — verse, a quote, a POV name; italic, set in from the margins. ⇧Enter again continues it; Enter returns to prose')}
         ${row(KPH, 'Placeholder note')}
         ${row(KDA, 'Send the selected passage to Darlings')}
         ${row(KZ, 'Undo big moves (chapter deletes, replace-all, darlings) when not mid-typing')}
@@ -3960,11 +4269,19 @@ function exportChapters() {
 // The open book, packaged for the builders. Every builder takes an optional
 // data object in this shape, good for anthologies.
 function bookExportData() {
+  // an EPUB wants a real UUID as its identifier; the book gets one the first
+  // time it's exported and keeps it, so re-exports are the same book
+  if (!book.uuid) {
+    book.uuid = crypto.randomUUID();
+    saveMeta();
+  }
   return {
     id: book.id,
+    uuid: book.uuid,
     title: book.title,
     subtitle: book.subtitle,
-    author: book.author,
+    author: book.author || 'Anonymous', // the screen says so; the files should too
+    language: library.spellLanguage || 'en',
     coverSeed: book.coverSeed,
     coverImage: book.coverImage || null,
     sections: exportChapters()
@@ -4182,6 +4499,7 @@ window.neo.onMenu(async (msg) => {
   if (msg.type === 'emailSettings') emailSettings();
   if (msg.type === 'find') openSearch();
   if (msg.type === 'spellcheck') toggleSpellcheck();
+  if (msg.type === 'spellLanguage') changeSpellLanguage(msg.value);
   if (msg.type === 'typewriter') toggleTypewriter();
   if (msg.type === 'import') importBooks();
   if (msg.type === 'stats') openStats();
@@ -4189,6 +4507,7 @@ window.neo.onMenu(async (msg) => {
   if (msg.type === 'align') {
     applyAlign(msg.value);
   }
+  if (msg.type === 'poetry') togglePoetry();
   if (msg.type === 'uiBright') {
     library.uiBright = !library.uiBright;
     await window.neo.writeLibrary(library);
@@ -4205,6 +4524,15 @@ window.neo.onMenu(async (msg) => {
     if (msg.value === 0) library.pageZoom = 1; // ⌘0 resets pinch zoom too
     await window.neo.writeLibrary(library);
     applyFonts();
+  }
+  if (msg.type === 'bodyFontPick') {
+    const name = await pickLocalFont();
+    if (name) {
+      library.fonts = library.fonts || {};
+      library.fonts.body = name;
+      await window.neo.writeLibrary(library);
+    }
+    applyFonts(); // also undoes a hover preview after Cancel
   }
   if (msg.type === 'bodyFont') {
     library.fonts = library.fonts || {};
@@ -4234,6 +4562,51 @@ function reportError(msg) {
 }
 window.addEventListener('error', (e) => reportError(`${e.message} @ ${e.filename}:${e.lineno}`));
 window.addEventListener('unhandledrejection', (e) => reportError('Unhandled: ' + (e.reason && e.reason.stack || e.reason)));
+
+/* ================================================================== */
+/*  Linux body fonts                                                   */
+/*  Georgia, Palatino, Baskerville, Hoefler Text, and Iowan Old Style  */
+/*  are not on Linux. The bundled faces below are what the Format menu */
+/*  and the first-run picker offer instead. Old libraries still resolve */
+/*  the macOS names, but those names stay out of the picker.           */
+/* ================================================================== */
+
+const LINUX_BODY_FONTS = {
+  'Gelasio': '"Gelasio", Georgia, "Times New Roman", serif',
+  'TeX Gyre Pagella': '"TeX Gyre Pagella", Palatino, "Palatino Linotype", serif',
+  'Libre Baskerville': '"Libre Baskerville", Baskerville, Georgia, serif',
+  'Alegreya': '"Alegreya", "Hoefler Text", Georgia, serif',
+  'Source Serif Pro': '"Source Serif Pro", "Iowan Old Style", Georgia, serif'
+};
+
+function installLinuxBodyFonts() {
+  if (IS_MAC || /win/i.test(navigator.platform)) return;
+  const legacy = {
+    Georgia: LINUX_BODY_FONTS.Gelasio,
+    Palatino: LINUX_BODY_FONTS['TeX Gyre Pagella'],
+    Baskerville: LINUX_BODY_FONTS['Libre Baskerville'],
+    'Hoefler Text': LINUX_BODY_FONTS.Alegreya,
+    'Iowan Old Style': LINUX_BODY_FONTS['Source Serif Pro'],
+    Cambria: LINUX_BODY_FONTS['Source Serif Pro'],
+    Constantia: LINUX_BODY_FONTS['Libre Baskerville']
+  };
+  for (const key of Object.keys(BODY_FONTS)) delete BODY_FONTS[key];
+  Object.assign(BODY_FONTS, LINUX_BODY_FONTS);
+  for (const [key, stack] of Object.entries(legacy)) {
+    Object.defineProperty(BODY_FONTS, key, {
+      value: stack, enumerable: false, writable: true, configurable: true
+    });
+  }
+  DROPCAP_FONTS.literary = '"Libre Bodoni", "Didot", "Bodoni 72", Georgia, serif';
+  DROPCAP_FONTS.fantasy = '"TeX Gyre Chorus", "Apple Chancery", "Snell Roundhand", cursive';
+  DROPCAP_FONTS.scifi = '"Jost", Futura, "Avenir Next", "Helvetica Neue", sans-serif';
+  // A shared choice list, when the renderer defines one, has to name these
+  // bundled faces on Linux rather than fonts the machine does not have.
+  if (typeof BODY_FONT_CHOICES !== 'undefined') {
+    BODY_FONT_CHOICES.splice(0, BODY_FONT_CHOICES.length, ...Object.keys(LINUX_BODY_FONTS));
+  }
+}
+installLinuxBodyFonts();
 
 /* ================================================================== */
 

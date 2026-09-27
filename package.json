@@ -1,7 +1,7 @@
 {
   "name": "neo",
   "productName": "My Notes",
-  "version": "0.7.10-notes.1",
+  "version": "0.8.1-notes.1",
   "description": "NEO with links, lists, tables, code, quotes, headings and pictures. Distraction-free by default.",
   "homepage": "https://github.com/hughhowey/neo",
   "main": "main.js",
@@ -94,7 +94,13 @@
     "electron-builder": "^26.15.3"
   },
   "dependencies": {
+    "dictionary-de": "^3.0.0",
+    "dictionary-en-au": "^3.0.0",
+    "dictionary-en-ca": "^3.0.0",
+    "dictionary-en-gb": "^3.0.0",
     "dictionary-en-us": "^2.2.1",
+    "dictionary-es": "^4.0.0",
+    "dictionary-fr": "^3.0.0",
     "electron-updater": "^6.3.9",
     "jszip": "^3.10.1",
     "nspell": "^2.1.5"
