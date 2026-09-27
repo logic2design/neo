@@ -206,3 +206,52 @@ body.bright #fmt-bar button { color: #c8c8c8; }
 }
 #fmt-tip[hidden] { display: none; }
 #fmt-tip .tip-keys { color: var(--accent); margin-left: 8px; letter-spacing: 0.5px; }
+
+/* ---------- snippets ---------- */
+.tab.snippets { margin-left: 4px; }
+#snippets-list .sn-top { display: flex; gap: 10px; margin-bottom: 22px; }
+#snippets-list .sn-search {
+  flex: 1; padding: 7px 11px; border-radius: 6px; font-size: 13px;
+  background: transparent; color: var(--ink); border: 1px solid var(--rich-rule);
+}
+#snippets-list .sn-search:focus { outline: none; border-color: var(--accent); }
+#snippets-list .sn-new, .snippet .sn-actions button {
+  background: none; border: 1px solid var(--rich-rule); border-radius: 5px;
+  font-size: 12px; padding: 4px 11px; color: var(--rich-muted); cursor: pointer;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+}
+#snippets-list .sn-new:hover, .snippet .sn-actions button:hover { border-color: var(--accent); color: var(--ink); }
+.snippet { border-left-color: #6f8f7a; }
+.snippet .sn-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 10px; }
+.snippet .sn-name {
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: 12.5px; font-weight: 600;
+  color: var(--ink); outline: none; border-bottom: 1px dashed transparent; min-width: 40px;
+}
+.snippet .sn-name:focus { border-bottom-color: var(--accent); }
+.snippet .sn-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.snippet .sn-actions .sn-del:hover { color: #d97b6c; border-color: #6b3a34; }
+.snippet .sn-body { max-height: 320px; overflow: auto; }
+.snippet .sn-body > :first-child { margin-top: 0; }
+.snippet .sn-body > :last-child { margin-bottom: 0; }
+.snippet .sn-body p + p { margin-top: 0.5em; }
+.snippet .sn-body figure.neo-img { max-width: 60%; }
+
+/* the ⌘⇧J picker */
+.rich-modal .sp-filter { margin: 4px 0 12px; }
+.rich-modal .sp-list { max-height: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+.rich-modal .sp-row {
+  display: block; text-align: left; width: 100%; cursor: pointer;
+  background: var(--bg); border: 1px solid #333; border-radius: 6px; padding: 8px 11px; color: #ccc;
+}
+.rich-modal .sp-row strong { display: block; font-size: 13px; color: #eee; font-weight: 600; margin-bottom: 2px; }
+.rich-modal .sp-row span { display: block; font-size: 12px; color: #888; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rich-modal .sp-row.on, .rich-modal .sp-row:hover { border-color: var(--accent); }
+.rich-modal .sp-none { font-size: 13px; color: #888; padding: 10px 2px; }
+
+/* the light/dark switch beside the zoom control */
+#theme-toggle {
+  background: none; border: none; color: inherit; cursor: pointer; padding: 0 2px;
+  display: inline-flex; align-items: center; line-height: 1;
+}
+#theme-toggle:hover { color: #ddd; }
+#theme-toggle svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }

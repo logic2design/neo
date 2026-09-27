@@ -2351,6 +2351,8 @@ const RICH_COMMANDS = {
 function runRich(cmd) {
   if (document.querySelector('.modal-backdrop:not([hidden])')) return;
   if (cmd === 'shortcuts') { showHelp(); return; }
+  if (cmd === 'snipSave') { saveSelectionAsSnippet(); return; }
+  if (cmd === 'snipInsert') { openSnippetPicker(); return; }
   if (cmd === 'darling') {
     if (currentTab !== 'manuscript') { toast('Darlings come from the manuscript — switch to it, select a passage, then send it'); return; }
     darlingFromKeyboard(); // same move as ⌘⇧D and dragging onto the Darlings tab
@@ -3275,6 +3277,8 @@ const BAR_ITEMS = [
   '|',
   ['clear', ICON('<path d="M4 3.5h8M8.3 3.5 6.5 12"/><path d="M10.2 10.2l3.6 3.6M13.8 10.2l-3.6 3.6"/>'), 'Clear formatting', ''],
   '|',
+  ['snipSave', ICON('<path d="M4.2 2.2h7.6v11.6L8 11 4.2 13.8z"/><path d="M8 5v3.6M6.2 6.8h3.6"/>'), 'Save selection as a snippet', K('⌘⇧K', 'Ctrl+Shift+K')],
+  ['snipInsert', ICON('<path d="M4.2 2.2h7.6v11.6L8 11 4.2 13.8z"/><path d="M6.2 6.6 8 8.4l1.8-1.8"/>'), 'Insert a snippet', K('⌘⇧J', 'Ctrl+Shift+J')],
   ['darling', ICON('<path d="M8 13.2S2.3 9.9 2.3 6.1A2.9 2.9 0 0 1 8 4.8a2.9 2.9 0 0 1 5.7 1.3C13.7 9.9 8 13.2 8 13.2z"/>'), 'Send selection to Darlings', KDA],
   ['shortcuts', ICON('<rect x="1.3" y="4" width="13.4" height="8.4" rx="1.6"/><path d="M3.8 6.5h.01M6.3 6.5h.01M8.8 6.5h.01M11.3 6.5h.01M3.8 8.7h.01M11.3 8.7h.01M5.6 10.4h4.8M6.3 8.7h3.4"/>'), 'All keyboard shortcuts', K('⌘/', 'Ctrl+/')]
 ];
@@ -3327,7 +3331,7 @@ fmtBar.addEventListener('mouseenter', () => { barHover = true; updateBarVisibili
 fmtBar.addEventListener('mouseleave', () => { barHover = false; updateBarVisibility(); });
 
 function barAllowed() {
-  return !!book && !$('#editor-view').hidden && currentTab !== 'outline' && currentTab !== 'darlings' &&
+  return !!book && !$('#editor-view').hidden && currentTab !== 'outline' && currentTab !== 'darlings' && currentTab !== 'snippets' &&
     $('#searchbar').hidden && !document.querySelector('.modal-backdrop:not([hidden])');
 }
 function updateBarVisibility() {
@@ -3619,6 +3623,13 @@ function richInit() {
 
 function richMenu(msg) {
   if (msg.type === 'rich') runRich(msg.cmd);
+  if (msg.type === 'snippet') {
+    if (!book || $('#editor-view').hidden) { toast('Open a book first — snippets go into the writing'); return; }
+    if (document.querySelector('.modal-backdrop:not([hidden])')) return;
+    if (msg.cmd === 'save') saveSelectionAsSnippet();
+    if (msg.cmd === 'insert') openSnippetPicker();
+    if (msg.cmd === 'show') switchTab(currentTab === 'snippets' ? snippetReturnTab : 'snippets');
+  }
   if (msg.type === 'mdShortcuts') {
     library.mdShortcuts = !!msg.value;
     window.neo.writeLibrary(library);
@@ -4074,3 +4085,320 @@ async function materializeImages(blocks, bookId) {
   }
   return blocks.filter((b) => b.type !== 'image' || b.src);
 }
+
+
+/* ================================================================== */
+/*  SNIPPETS                                                           */
+/*  Reusable passages — text, links, lists, tables, pictures — kept    */
+/*  in the library rather than any one book, so every book shares      */
+/*  them. Saving copies (the writing stays put); inserting brings a    */
+/*  copy of the snippet's pictures into the book it lands in.          */
+/* ================================================================== */
+
+let snippets = null; // loaded on first use
+let snippetReturnTab = 'manuscript';
+const SNIP_IMG = /^\.\.\/Snippets\/images\//;
+
+async function loadSnippets() {
+  if (!snippets) snippets = (await window.neo.readSnippets()) || [];
+  return snippets;
+}
+const saveSnippets = () => window.neo.writeSnippets(snippets);
+
+// a book path on disk for a book-relative picture
+const bookFilePath = (bookId, rel) => libraryDirPath + '/' + bookId + '/' + safeDecode(rel);
+
+// the selection (or a dragged range) as blocks, ready to keep
+function blocksFromRange(range) {
+  const holder = document.createElement('div');
+  let frag = range.cloneContents();
+  // a selection wholly inside a bold run, a link, code… keeps that dress
+  let n = range.commonAncestorContainer;
+  if (n.nodeType === 3) n = n.parentElement;
+  while (n && n.nodeType === 1 && !n.matches(CARET_BLOCKS) && !n.matches(RICH_EDITABLE) && !n.matches(BLOCKISH)) {
+    if (/^(B|STRONG|I|EM|S|DEL|STRIKE|CODE|A)$/.test(n.tagName)) {
+      const w = n.cloneNode(false);
+      w.appendChild(frag);
+      frag = w;
+    }
+    n = n.parentElement;
+  }
+  holder.appendChild(frag);
+  holder.querySelectorAll('.darling-anchor, .ph-mark, .ghost').forEach((n) => n.remove());
+  // a selection inside one table cell, list item or code block comes out as bare text
+  return parseBlocks(holder, { bookId: book && book.id, trim: true });
+}
+
+// book pictures are copied into the snippets' own folder, so the snippet
+// outlives the book it came from
+async function snippetizeImages(blocks) {
+  for (const b of walkBlocks(blocks)) {
+    if (b.type !== 'image') continue;
+    if (!hasScheme(b.src) && !SNIP_IMG.test(b.src) && b.bookId) {
+      const rel = await window.neo.snippetImage(bookFilePath(b.bookId, b.src));
+      if (rel) b.src = rel;
+    }
+  }
+  return blocks;
+}
+
+// …and copied into a book when a snippet is inserted there
+async function adoptSnippetImages(blocks, bookId) {
+  for (const b of walkBlocks(blocks)) {
+    if (b.type !== 'image') continue;
+    b.bookId = bookId;
+    if (SNIP_IMG.test(b.src)) {
+      const rel = await window.neo.importImage(bookId, libraryDirPath + '/Snippets/images/' + safeDecode(b.src.replace(SNIP_IMG, '')));
+      if (rel) b.src = rel;
+    }
+  }
+  return blocks;
+}
+
+const snippetName = (text) => {
+  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  return t.length > 48 ? t.slice(0, 46).replace(/\s+\S*$/, '') + '…' : t || 'Snippet';
+};
+
+async function addSnippet(blocks, text) {
+  if (!blocks.length) { toast('Nothing to keep there'); return null; }
+  await loadSnippets();
+  await snippetizeImages(blocks);
+  // plain text block by block, so a paragraph, a caption and a table don't run together
+  const plain = blocks.map((b) => blockPlainText(b).replace(/\s*\n\s*/g, b.type === 'table' ? ' · ' : '\n').trim()).filter(Boolean).join('\n') || String(text || '').trim();
+  const sn = {
+    id: 'sn-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5),
+    name: snippetName(plain.split('\n')[0] || (blocks[0].type === 'image' ? 'Picture' : blocks[0].type === 'table' ? 'Table' : '')),
+    html: blocksToEditorHtml(blocks),
+    text: plain,
+    created: new Date().toISOString()
+  };
+  snippets.unshift(sn);
+  await saveSnippets();
+  if (currentTab === 'snippets') renderSnippets();
+  return sn;
+}
+
+// ⌘⇧K, the bar's bookmark, or a drop on the Snippets tab
+async function saveSelectionAsSnippet(range) {
+  const sel = window.getSelection();
+  if (!range) {
+    if (!sel.rangeCount || sel.isCollapsed || !richRoot()) {
+      toast(`Select something in your writing first, then ${K('⌘⇧K', 'Ctrl+Shift+K')} keeps a copy as a snippet`);
+      return;
+    }
+    range = sel.getRangeAt(0);
+  }
+  const sn = await addSnippet(blocksFromRange(range), range.toString());
+  if (sn) toast(`Saved as a snippet — “${sn.name}” is ready in every book`);
+}
+
+async function snippetFromClipboard() {
+  const clip = await window.neo.clipboardRead();
+  let blocks = [];
+  if (clip.html && clip.html.trim()) blocks = parseHtmlString(clip.html, { loose: true, bookId: book && book.id });
+  else if (clip.text && clip.text.trim()) blocks = looksLikeMarkdown(clip.text) ? mdToBlocks(clip.text, {}) : txtToBlocks(clip.text);
+  if (!blocks.length) { toast('The clipboard is empty'); return; }
+  await adoptPastedImages(blocks, book && book.id);
+  await addSnippet(blocks, clip.text);
+  toast('Clipboard saved as a snippet');
+}
+
+// the page and caret the snippet goes into
+function insertSnippetBlocks(root, blocks) {
+  if (!root) return;
+  const s = window.getSelection();
+  if (!s.rangeCount || !root.contains(s.anchorNode)) {
+    // no caret on this page yet: the end of the chapter in view
+    const last = root.lastElementChild;
+    if (last) richPlaceCaret(last); else root.focus();
+  }
+  insertBlocks(root, blocks);
+}
+
+async function insertSnippet(sn, root) {
+  const blocks = await adoptSnippetImages(parseHtmlString(sn.html, { bookId: book.id }), book.id);
+  insertSnippetBlocks(root, blocks);
+  toast(`“${sn.name}” inserted`);
+}
+
+// Insert from the Snippets tab: back to the page (and caret) you came from
+async function insertFromPanel(sn) {
+  switchTab(snippetReturnTab);
+  await new Promise((r) => setTimeout(r, 30));
+  const root = snippetReturnTab === 'notes' ? $('#aux-editor')
+    : (richRoot() || document.querySelector(`.chapter[data-id="${currentChapterId || book.chapterOrder[0]}"] .chapter-body`));
+  await insertSnippet(sn, root);
+}
+
+async function copySnippet(sn) {
+  // pictures point at their real files so other apps (and NEO) can take them
+  const t = document.createElement('template');
+  t.innerHTML = sn.html;
+  for (const img of t.content.querySelectorAll('img')) img.setAttribute('src', mediaUrl(img.dataset.src || img.getAttribute('src'), book.id));
+  await window.neo.clipboardWrite({ html: t.innerHTML, text: sn.text || t.content.textContent });
+  toast('Snippet copied — paste it anywhere');
+}
+
+function renderSnippets() {
+  const wrap = $('#snippets-list');
+  loadSnippets().then(() => {
+    const q = (wrap.querySelector('.sn-search') || {}).value || '';
+    wrap.innerHTML = `
+      <div class="sn-top">
+        <input class="sn-search" type="search" placeholder="Search snippets" spellcheck="false"/>
+        <button class="sn-new">New from clipboard</button>
+      </div>
+      <div class="sn-items"></div>`;
+    const search = wrap.querySelector('.sn-search');
+    search.value = q;
+    const items = wrap.querySelector('.sn-items');
+    const draw = () => {
+      const f = search.value.trim().toLowerCase();
+      items.innerHTML = '';
+      const list = snippets.filter((sn) => !f || (sn.name + ' ' + sn.text).toLowerCase().includes(f));
+      if (!snippets.length) {
+        items.innerHTML = `<div class="darlings-empty">Snippets are passages you use again and again — a sign-off, a table, a set of links, a picture.<br>Select something and press ${K('⌘⇧K', 'Ctrl+Shift+K')}, or drag it onto the Snippets tab.<br>Every book shares them; ${K('⌘⇧J', 'Ctrl+Shift+J')} drops one in wherever you're typing.</div>`;
+        return;
+      }
+      if (!list.length) { items.innerHTML = '<div class="darlings-empty">No snippet matches that.</div>'; return; }
+      for (const sn of list) {
+        const el = document.createElement('div');
+        el.className = 'snippet darling';
+        el.innerHTML = `
+          <div class="sn-head">
+            <span class="sn-name" title="Click to rename"></span>
+            <span class="sn-actions">
+              <button class="sn-insert" title="Put it where you were typing">Insert</button>
+              <button class="sn-copy" title="Copy to the clipboard, to paste here or in any app">Copy</button>
+              <button class="sn-del" title="Delete this snippet">Delete</button>
+            </span>
+          </div>
+          <div class="sn-body"></div>`;
+        const name = el.querySelector('.sn-name');
+        name.textContent = sn.name;
+        name.contentEditable = 'true';
+        name.spellcheck = false;
+        name.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); name.blur(); } });
+        name.addEventListener('blur', () => {
+          const v = name.textContent.trim();
+          if (v && v !== sn.name) { sn.name = v; saveSnippets(); } else name.textContent = sn.name;
+        });
+        const body = el.querySelector('.sn-body');
+        body.innerHTML = sn.html;
+        hydrateMedia(body);
+        el.querySelector('.sn-insert').onclick = () => insertFromPanel(sn);
+        el.querySelector('.sn-copy').onclick = () => copySnippet(sn);
+        el.querySelector('.sn-del').onclick = async () => {
+          const ok = await optionModal(`Delete “${escHtml(sn.name)}”?`, 'It goes from every book’s snippet list. Anything already inserted stays where it is.',
+            [{ label: 'Delete snippet', danger: true, value: 'del' }]);
+          if (ok !== 'del') return;
+          snippets = snippets.filter((x) => x.id !== sn.id);
+          await saveSnippets();
+          draw();
+        };
+        items.appendChild(el);
+      }
+    };
+    search.addEventListener('input', draw);
+    search.addEventListener('keydown', (e) => e.stopPropagation());
+    wrap.querySelector('.sn-new').onclick = snippetFromClipboard;
+    draw();
+  });
+}
+
+// ⌘⇧J: a quick list, type to filter, Enter to drop the snippet in at the caret
+async function openSnippetPicker() {
+  await loadSnippets();
+  const root = richRoot() || lastRoot();
+  if (!root) { toast('Click where the snippet should go first'); return; }
+  if (!snippets.length) { toast(`No snippets yet — select something and press ${K('⌘⇧K', 'Ctrl+Shift+K')} to keep one`); return; }
+  const range = saveSelection();
+  const pick = await richModal(480, `
+    <h2 style="font-size:16px">Insert a snippet</h2>
+    <input class="sp-filter" type="text" placeholder="Type to find a snippet" spellcheck="false"/>
+    <div class="sp-list"></div>
+    <div class="rm-actions"><span class="rm-hint" style="margin:0">↑ ↓ to choose · Enter to insert</span><span style="flex:1"></span><button class="m-cancel btn-quiet">Cancel</button></div>`, (bd, done) => {
+    const input = bd.querySelector('.sp-filter');
+    const listEl = bd.querySelector('.sp-list');
+    let shown = [];
+    let at = 0;
+    const draw = () => {
+      const f = input.value.trim().toLowerCase();
+      shown = snippets.filter((sn) => !f || (sn.name + ' ' + sn.text).toLowerCase().includes(f));
+      at = Math.min(at, Math.max(0, shown.length - 1));
+      listEl.innerHTML = shown.length ? '' : '<div class="sp-none">No snippet matches that.</div>';
+      shown.forEach((sn, k) => {
+        const row = document.createElement('button');
+        row.className = 'sp-row' + (k === at ? ' on' : '');
+        row.innerHTML = '<strong></strong><span></span>';
+        row.querySelector('strong').textContent = sn.name;
+        row.querySelector('span').textContent = (sn.text || '').replace(/\s+/g, ' ').slice(0, 90);
+        row.onclick = () => done(sn);
+        listEl.appendChild(row);
+      });
+      const on = listEl.querySelector('.on');
+      if (on) on.scrollIntoView({ block: 'nearest' });
+    };
+    input.addEventListener('input', () => { at = 0; draw(); });
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowDown') { e.preventDefault(); at = Math.min(shown.length - 1, at + 1); draw(); }
+      if (e.key === 'ArrowUp') { e.preventDefault(); at = Math.max(0, at - 1); draw(); }
+      if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); if (shown[at]) done(shown[at]); }
+    });
+    input.focus();
+    draw();
+  });
+  restoreSelection(root, range);
+  if (pick) await insertSnippet(pick, root);
+}
+
+// the Snippets tab takes drops like the Darlings tab — but keeps a copy
+const snippetsTab = $('.tab.snippets');
+snippetsTab.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'copy';
+  snippetsTab.classList.add('drag-over');
+});
+snippetsTab.addEventListener('dragleave', () => snippetsTab.classList.remove('drag-over'));
+snippetsTab.addEventListener('drop', async (e) => {
+  e.preventDefault();
+  snippetsTab.classList.remove('drag-over');
+  const s = window.getSelection();
+  const range = draggedRange || (s.rangeCount && !s.isCollapsed ? s.getRangeAt(0) : null);
+  draggedRange = null;
+  if (range) { await saveSelectionAsSnippet(range); return; }
+  const html = e.dataTransfer.getData('text/html');
+  const text = e.dataTransfer.getData('text/plain');
+  const blocks = html ? parseHtmlString(html, { loose: true, bookId: book && book.id }) : txtToBlocks(text);
+  const sn = await addSnippet(blocks, text);
+  if (sn) toast(`Saved as a snippet — “${sn.name}”`);
+});
+// a drag started in Notes can go to the Snippets tab too
+$('#aux-editor').addEventListener('dragstart', () => {
+  const s = window.getSelection();
+  draggedRange = s.rangeCount && !s.isCollapsed ? s.getRangeAt(0).cloneRange() : null;
+  $('#bottombar').classList.add('attn');
+});
+
+
+/* ---------- light / dark page, one click from the bottom bar ---------- */
+
+const themeBtn = document.createElement('button');
+themeBtn.id = 'theme-toggle';
+themeBtn.type = 'button';
+$('#counters').insertBefore(themeBtn, $('#zoom-control'));
+const SUN = '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.6M8 12.9v1.6M1.5 8h1.6M12.9 8h1.6M3.4 3.4l1.1 1.1M11.5 11.5l1.1 1.1M3.4 12.6l1.1-1.1M11.5 4.5l1.1-1.1"/></svg>';
+const MOON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.2 10.1A5.6 5.6 0 0 1 5.9 2.8a5.6 5.6 0 1 0 7.3 7.3z"/></svg>';
+function updateThemeButton() {
+  const night = library && library.pageTheme === 'night';
+  // the icon shows where a click takes you
+  themeBtn.innerHTML = night ? SUN : MOON;
+  themeBtn.title = (night ? 'Light page' : 'Dark page') + ` (${K('⌘⇧L', 'Ctrl+Shift+L')})`;
+  themeBtn.setAttribute('aria-label', night ? 'Switch to a light page' : 'Switch to a dark page');
+}
+themeBtn.addEventListener('click', async () => {
+  library.pageTheme = library.pageTheme === 'night' ? 'paper' : 'night';
+  applyFonts();
+  await window.neo.writeLibrary(library);
+});

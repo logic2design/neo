@@ -2558,6 +2558,9 @@ function switchTab(name) {
   const auxEditor = $('#aux-editor');
   const dList = $('#darlings-list');
   const oList = $('#outline-list');
+  const sList = $('#snippets-list');
+  // Insert on a snippet goes back to the page you came from
+  if (name === 'snippets' && currentTab !== 'snippets') snippetReturnTab = currentTab === 'notes' ? 'notes' : 'manuscript';
   const back = tabPlaces[name];
   const returnTo = () => { if (back && typeof back.scroll === 'number') scroller.scrollTop = back.scroll; };
 
@@ -2576,8 +2579,14 @@ function switchTab(name) {
   auxEditor.hidden = true;
   dList.hidden = true;
   oList.hidden = true;
+  sList.hidden = true;
 
-  if (name === 'darlings') {
+  if (name === 'snippets') {
+    $('#aux-title').textContent = 'Snippets';
+    sList.hidden = false;
+    renderSnippets();
+    returnTo();
+  } else if (name === 'darlings') {
     $('#aux-title').textContent = 'Darlings';
     dList.hidden = false;
     renderDarlings();
@@ -4076,6 +4085,7 @@ function applyFonts() {
     document.documentElement.style.setProperty('--dropcap-font', DROPCAP_FONTS[f.dropcap]);
   }
   document.body.classList.toggle('night', library.pageTheme === 'night');
+  if (typeof updateThemeButton === 'function') updateThemeButton();
   document.body.classList.toggle('bright', !!library.uiBright);
   const size = Math.min(22, Math.max(14, library.editorFontSize || 17));
   document.documentElement.style.setProperty('--editor-size', size + 'px');
@@ -4219,6 +4229,9 @@ function showHelp() {
         ${row('⇧Enter', 'Poetry paragraph — verse, a quote, a POV name; italic, set in from the margins. ⇧Enter again continues it; Enter returns to prose')}
         ${row(KPH, 'Placeholder note')}
         ${row(KDA, 'Send the selected passage to Darlings')}
+        ${row(K('⌘⇧K', 'Ctrl+Shift+K'), 'Keep a copy of the selection as a snippet (shared by every book)')}
+        ${row(K('⌘⇧J', 'Ctrl+Shift+J'), 'Insert a snippet where you’re typing')}
+        ${row(K('⌘⌥J', 'Ctrl+Alt+J'), 'Show the Snippets tab')}
         ${row(KZ, 'Undo big moves (chapter deletes, replace-all, darlings) when not mid-typing')}
         ${row('-- and ...', 'Become an em dash — and a true ellipsis …')}
         ${row(K('⌘B · ⌘I', 'Ctrl+B · Ctrl+I'), 'Bold, italic. Quotes curl themselves.')}
@@ -4249,6 +4262,7 @@ function showHelp() {
       <div class="help-grid">
         ${row(K('⌘⇧F', 'Ctrl+Shift+F'), 'Full screen (Esc leaves)')}
         ${row(K('⌘⇧T', 'Ctrl+Shift+T'), 'Typewriter scrolling')}
+        ${row(K('⌘⇧L', 'Ctrl+Shift+L'), 'Light or dark page (or the ☾/☀ in the bottom bar)')}
         ${row(K('⌘;', 'Ctrl+;'), 'Spellcheck pass (right-click squiggles for fixes)')}
       </div>
 
@@ -4261,7 +4275,7 @@ function showHelp() {
 
       <div class="help-sec">Mouse</div>
       <div class="help-grid">
-        ${row('Drag text', 'Onto the Darlings tab')}
+        ${row('Drag text', 'Onto Darlings (moves it out) or Snippets (keeps a copy)')}
         ${row('Right-click', 'Books, shelf names, chapter headings, outline lines')}
         ${row('Drag chapters', 'In the left panel, to reorder — everything renumbers')}
         ${row('Double-click', 'A tab, to rename it')}
@@ -4555,7 +4569,7 @@ window.neo.onMenu(async (msg) => {
     applyFonts();
   }
   if (msg.type === 'pageTheme') {
-    library.pageTheme = msg.value;
+    library.pageTheme = msg.value === 'toggle' ? (library.pageTheme === 'night' ? 'paper' : 'night') : msg.value;
     await window.neo.writeLibrary(library);
     applyFonts();
   }

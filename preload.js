@@ -55,5 +55,12 @@ contextBridge.exposeInMainWorld('neo', {
   openLink: (href, bookId) => ipcRenderer.invoke('link:open', href, bookId),
   setMenuChecked: (states) => ipcRenderer.invoke('menu:setChecked', states),
 
+  // snippets, shared by every book
+  readSnippets: () => ipcRenderer.invoke('snippets:read'),
+  writeSnippets: (list) => ipcRenderer.invoke('snippets:write', list),
+  snippetImage: (srcPath) => ipcRenderer.invoke('snippets:importImage', srcPath),
+  clipboardWrite: (data) => ipcRenderer.invoke('clipboard:write', data),
+  clipboardRead: () => ipcRenderer.invoke('clipboard:read'),
+
   onMenu: (cb) => ipcRenderer.on('menu', (_e, msg) => cb(msg))
 });

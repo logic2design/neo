@@ -347,6 +347,23 @@ function newImageName(bookId, base, ext) {
   return { full: path.join(dir, name), rel: 'images/' + name };
 }
 
+// the same picture copied in twice becomes one file: an identical file
+// already there under the name (or a numbered twin of it) is reused
+function sameFileIn(dir, slug, ext, srcPath) {
+  if (!fs.existsSync(dir)) return null;
+  const size = fs.statSync(srcPath).size;
+  let src = null;
+  for (let n = 1; n < 200; n++) {
+    const name = n === 1 ? `${slug}${ext}` : `${slug}-${n}${ext}`;
+    const full = path.join(dir, name);
+    if (!fs.existsSync(full)) return null;
+    if (fs.statSync(full).size !== size) continue;
+    src = src || fs.readFileSync(srcPath);
+    if (src.equals(fs.readFileSync(full))) return name;
+  }
+  return null;
+}
+
 function sniffImage(buf) {
   if (buf[0] === 0x89 && buf[1] === 0x50) return 'png';
   if (buf[0] === 0xff && buf[1] === 0xd8) return 'jpg';
@@ -384,7 +401,12 @@ ipcMain.handle('asset:importImage', (_e, bookId, srcPath) => {
     let ext = path.extname(srcPath).toLowerCase().slice(1);
     if (!IMAGE_EXTS.includes(ext)) ext = sniffImage(fs.readFileSync(srcPath)) || '';
     if (!ext) return null;
-    const { full, rel } = newImageName(bookId, path.basename(srcPath, path.extname(srcPath)), ext === 'jpeg' ? 'jpg' : ext);
+    ext = ext === 'jpeg' ? 'jpg' : ext;
+    const base = path.basename(srcPath, path.extname(srcPath));
+    const slug = base.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'image';
+    const twin = sameFileIn(path.join(bookDir(bookId), 'images'), slug, '.' + ext, srcPath);
+    if (twin) return 'images/' + twin;
+    const { full, rel } = newImageName(bookId, base, ext);
     fs.copyFileSync(srcPath, full);
     return rel;
   } catch (err) {
@@ -441,6 +463,51 @@ ipcMain.handle('asset:read', async (_e, bookId, src) => {
     logError('asset:read', err);
     return null;
   }
+});
+
+// ---------------------------------------------------------------------------
+// Snippets: reusable passages shared by every book. They live in the library
+// (snippets.json, pictures in Snippets/images) so they sync and back up with
+// it. A snippet's own pictures are referenced as ../Snippets/images/x.png —
+// relative to any book folder, so they show wherever the library lives.
+// ---------------------------------------------------------------------------
+
+const SNIPPETS_FILE = () => path.join(LIBRARY_DIR, 'snippets.json');
+ipcMain.handle('snippets:read', () => readJSON(SNIPPETS_FILE(), []));
+ipcMain.handle('snippets:write', (_e, list) => {
+  ensureLibrary();
+  writeJSON(SNIPPETS_FILE(), Array.isArray(list) ? list : []);
+  return true;
+});
+ipcMain.handle('snippets:importImage', (_e, srcPath) => {
+  try {
+    if (!srcPath || !fs.existsSync(srcPath)) return null;
+    const dir = path.join(LIBRARY_DIR, 'Snippets', 'images');
+    // already one of the snippets' own pictures
+    if (path.resolve(srcPath).startsWith(dir + path.sep)) return '../Snippets/images/' + path.basename(srcPath);
+    fs.mkdirSync(dir, { recursive: true });
+    const ext = path.extname(srcPath).toLowerCase();
+    const slug = path.basename(srcPath, ext).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'image';
+    const twin = sameFileIn(dir, slug, ext, srcPath);
+    if (twin) return '../Snippets/images/' + twin;
+    let name = slug + ext;
+    for (let n = 2; fs.existsSync(path.join(dir, name)); n++) name = `${slug}-${n}${ext}`;
+    fs.copyFileSync(srcPath, path.join(dir, name));
+    return '../Snippets/images/' + name;
+  } catch (err) {
+    logError('snippets:image', err);
+    return null;
+  }
+});
+
+// the system clipboard, for Copy on a snippet and New from Clipboard
+ipcMain.handle('clipboard:write', (_e, { html, text }) => {
+  require('electron').clipboard.write({ html: String(html || ''), text: String(text || '') });
+  return true;
+});
+ipcMain.handle('clipboard:read', () => {
+  const { clipboard } = require('electron');
+  return { html: clipboard.readHTML(), text: clipboard.readText() };
 });
 
 // Opening a link: web and mail go to the browser / mail app, documents open
@@ -1057,7 +1124,11 @@ function buildMenu() {
             checked: spellLanguage === code,
             click: () => sendToWindow({ type: 'spellLanguage', value: code })
           }))
-        }
+        },
+        { type: 'separator' },
+        { label: 'Save Selection as Snippet', accelerator: 'CmdOrCtrl+Shift+K', click: () => sendToWindow({ type: 'snippet', cmd: 'save' }) },
+        { label: 'Insert Snippet…', accelerator: 'CmdOrCtrl+Shift+J', click: () => sendToWindow({ type: 'snippet', cmd: 'insert' }) },
+        { label: 'Show Snippets', accelerator: 'CmdOrCtrl+Alt+J', click: () => sendToWindow({ type: 'snippet', cmd: 'show' }) }
       ]
     },
     {
@@ -1183,7 +1254,9 @@ function buildMenu() {
           label: 'Page',
           submenu: [
             { label: 'Night', click: () => sendToWindow({ type: 'pageTheme', value: 'night' }) },
-            { label: 'Paper', click: () => sendToWindow({ type: 'pageTheme', value: 'paper' }) }
+            { label: 'Paper', click: () => sendToWindow({ type: 'pageTheme', value: 'paper' }) },
+            { type: 'separator' },
+            { label: 'Switch Light / Dark', accelerator: 'CmdOrCtrl+Shift+L', click: () => sendToWindow({ type: 'pageTheme', value: 'toggle' }) }
           ]
         },
         {

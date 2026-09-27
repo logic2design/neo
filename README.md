@@ -71,6 +71,8 @@ Rich formatting on top of NEO, with the same interface:
 - **Pictures** (⌘⇧P, drag-and-drop, or paste): copied into the book's `images/` folder by default, or linked to a file on disk or on the web. Click one for size, caption, replace, remove.
 - **Markdown while typing**: `# `, `- `, `1. `, `[ ] `, `> `, ```` ``` ````, `---`, `**bold**`, `*italic*`, `` `code` ``, `~~strike~~`, `[text](url)`, `![alt](src)`. Toggle under Format.
 - **Darlings**: select a passage and click the heart on the formatting bar (or ⌘⇧D, or drag it onto the Darlings tab).
+- **Snippets** (tab beside Darlings): reusable passages shared by every book — text, links, lists, tables, pictures. ⌘⇧K keeps a copy of the selection, ⌘⇧J inserts one at the cursor, ⌘⌥J shows the tab; each has Insert, Copy, rename and Delete. Stored in the library as `snippets.json` and `Snippets/images/`.
+- **Light / dark page**: the ☾/☀ in the bottom bar, or ⌘⇧L.
 - **Paste** keeps structure from web pages, Word, Google Docs and Markdown text, and drops fonts and colours.
 - **Import** keeps headings, lists, tables, links and pictures from .docx and .md (including Obsidian `![[embeds]]`).
 - **Exports**: links, lists, tables, code and pictures in every format. EPUB, Word and PDF embed the pictures. HTML and Markdown write them to a `<name>_images` folder beside the file. EPUB turns links to local files into plain text, since ebook readers can't reach your Mac.
