@@ -304,10 +304,7 @@ function parseList(el, ctx, fmt) {
     }
     list.items.push(listItem(c, ctx, fmt));
   }
-  if (el.classList.contains('tasks') || list.items.some((i) => i.checked !== null)) {
-    list.task = true;
-    for (const i of list.items) if (i.checked === null) i.checked = false;
-  }
+  if (el.classList.contains('tasks') || list.items.some((i) => i.checked !== null)) list.task = true;
   return list;
 }
 
@@ -502,7 +499,7 @@ function figureHtml(b) {
 function blocksToEditorHtml(blocks) {
   const o = { marks: true };
   const item = (it, list) =>
-    `<li${list.task ? ` data-checked="${it.checked ? 'true' : 'false'}"` : ''}>${runsHtml(it.runs, o) || '<br>'}` +
+    `<li${list.task && it.checked !== null ? ` data-checked="${it.checked ? 'true' : 'false'}"` : ''}>${runsHtml(it.runs, o) || '<br>'}` +
     `${it.children.map((c) => listHtml(c, o, item)).join('')}</li>`;
   return blocks.map((b) => {
     switch (b.type) {
@@ -803,10 +800,7 @@ function mdList(lines, start, ctx) {
     item.runs = tidyRuns(item.runs, { trim: true });
     list.items.push(item);
   }
-  if (list.items.some((it) => it.checked !== null)) {
-    list.task = true;
-    for (const it of list.items) if (it.checked === null) it.checked = false;
-  }
+  if (list.items.some((it) => it.checked !== null)) list.task = true; // plain items in it keep no box
   return { block: list, next: i };
 }
 
@@ -1234,7 +1228,7 @@ function tableToTxt(b) {
 
 function listToTxt(b, indent) {
   return b.items.map((it, k) => {
-    const marker = b.task ? (it.checked ? '[x]' : '[ ]') : b.ordered ? `${b.start + k}.` : '-';
+    const marker = b.task && it.checked !== null ? (it.checked ? '[x]' : '[ ]') : b.ordered ? `${b.start + k}.` : '-';
     const pad = indent + ' '.repeat(marker.length + 1);
     const lines = runsToTxt(it.runs).split('\n');
     let s = indent + marker + ' ' + lines[0] + lines.slice(1).map((l) => '\n' + pad + l).join('');
@@ -1320,7 +1314,7 @@ function listToMd(b, indent) {
     const marker = b.ordered ? `${b.start + k}.` : '-';
     const pad = indent + ' '.repeat(marker.length + 1);
     const lines = runsToMd(it.runs).split('\n');
-    let s = indent + marker + ' ' + (b.task ? (it.checked ? '[x] ' : '[ ] ') : '') + lines[0] +
+    let s = indent + marker + ' ' + (b.task && it.checked !== null ? (it.checked ? '[x] ' : '[ ] ') : '') + lines[0] +
       lines.slice(1).map((l) => '\n' + pad + l).join('');
     for (const c of it.children) s += '\n' + listToMd(c, pad);
     return s;
@@ -1386,7 +1380,7 @@ function blocksToHtml(blocks, ctx) {
   const o = { xml: ctx.xml, href: ctx.href };
   const esc = ctx.xml ? escXml : escHtml;
   const item = (it, list) =>
-    `<li${list.task ? ' class="task"' : ''}>${list.task ? `<span class="box">${it.checked ? '☑' : '☐'}</span> ` : ''}` +
+    `<li${list.task && it.checked !== null ? ' class="task"' : ''}>${list.task && it.checked !== null ? `<span class="box">${it.checked ? '☑' : '☐'}</span> ` : ''}` +
     `${runsHtml(it.runs, o)}${it.children.map((c) => listHtml(c, o, item)).join('')}</li>`;
   return blocks.map((b) => {
     const wasFirst = ctx.first;
@@ -1560,7 +1554,7 @@ async function docxBlocks(blocks, ctx, inQuote = false) {
   const out = [];
   const listXml = (b, lvl, numId) => {
     for (const it of b.items) {
-      const box = b.task ? [{ text: it.checked ? '☑ ' : '☐ ' }] : [];
+      const box = b.task && it.checked !== null ? [{ text: it.checked ? '☑ ' : '☐ ' }] : [];
       out.push(docxPara(docxRuns([...box, ...it.runs], ctx), { style: 'ListParagraph', num: { lvl, id: numId } }));
       for (const c of it.children) listXml(c, Math.min(8, lvl + 1), c.ordered === b.ordered ? numId : docxNum(ctx, c));
     }
@@ -2510,10 +2504,11 @@ function richSpace(e, root) {
   const li = caretIn(root, 'li');
   if (li) {
     const pre = textBefore(li);
-    if (/^\[[ xX]?\]$/.test(pre) && !li.parentElement.classList.contains('tasks')) {
+    if (/^\[[ xX]?\]$/.test(pre) && li.dataset.checked == null && li.parentElement.tagName === 'UL') {
+      // just this item gets a box; the rest of the list stays as it is
       e.preventDefault();
       deleteBefore(li);
-      markTasks(li.parentElement, true);
+      li.parentElement.classList.add('tasks');
       li.dataset.checked = /x/i.test(pre) ? 'true' : 'false';
       touched(root);
       return true;
@@ -3376,16 +3371,18 @@ function refreshBar() {
   for (const b of fmtBar.querySelectorAll('button')) b.classList.toggle('on', !!state[b.dataset.cmd]);
 }
 
+// a short timer rather than an animation frame: frames pause while the
+// window is hidden, which left the bar and link card a step behind
 let barRAF = null;
 document.addEventListener('selectionchange', () => {
   if (barRAF) return;
-  barRAF = requestAnimationFrame(() => {
+  barRAF = setTimeout(() => {
     barRAF = null;
     if (!book) return;
     refreshBar();
     updateBarVisibility();
     updateLinkCard();
-  });
+  }, 16);
 });
 
 /* ---------- the link card ---------- */
@@ -3623,6 +3620,11 @@ function richInit() {
 
 function richMenu(msg) {
   if (msg.type === 'rich') runRich(msg.cmd);
+  if (msg.type === 'agentAccess') {
+    toast(msg.value
+      ? 'AI agents can now read and write your notes while My Notes is open (File menu to switch off)'
+      : 'AI agents can no longer reach your notes', 6000);
+  }
   if (msg.type === 'snippet') {
     if (!book || $('#editor-view').hidden) { toast('Open a book first — snippets go into the writing'); return; }
     if (document.querySelector('.modal-backdrop:not([hidden])')) return;
@@ -4224,8 +4226,7 @@ async function insertSnippet(sn, root) {
 
 // Insert from the Snippets tab: back to the page (and caret) you came from
 async function insertFromPanel(sn) {
-  switchTab(snippetReturnTab);
-  await new Promise((r) => setTimeout(r, 30));
+  switchTab(snippetReturnTab); // puts the caret back where it was
   const root = snippetReturnTab === 'notes' ? $('#aux-editor')
     : (richRoot() || document.querySelector(`.chapter[data-id="${currentChapterId || book.chapterOrder[0]}"] .chapter-body`));
   await insertSnippet(sn, root);

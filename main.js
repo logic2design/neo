@@ -717,6 +717,83 @@ ipcMain.handle('export:save', async (_e, { format, defaultName, content, zipEntr
   return filePath;
 });
 
+// ---------------------------------------------------------------------------
+// AI agents (Codex, Hermes, Claude… through MCP) may read and write notes —
+// only when the writer ticks File → Allow AI Agents to Read & Write Notes,
+// and only while the app is open. mcp/neo-mcp.mjs is a small stdio MCP
+// server that reaches the app over a Unix socket only this Mac user can
+// open. The page (agent.js) does the work, so edits go through the same
+// code as typing: they show up live and ⌘Z takes them back.
+// ---------------------------------------------------------------------------
+
+const net = require('net');
+function agentSocketPath() {
+  if (process.env.NEO_AGENT_SOCKET) return process.env.NEO_AGENT_SOCKET;
+  const p = path.join(app.getPath('userData'), 'agent.sock');
+  return p.length < 100 ? p : path.join(os.tmpdir(), 'my-notes-agent.sock');
+}
+const agentAllowed = () => readSettings().agentAccess === true; // off until the writer says so
+let agentServer = null;
+const agentPending = new Map();
+let agentSeq = 0;
+
+ipcMain.on('agent:reply', (_e, id, result) => {
+  const done = agentPending.get(id);
+  if (done) { agentPending.delete(id); done(result); }
+});
+
+function askPage(tool, args) {
+  const win = BrowserWindow.getAllWindows()[0];
+  if (!win) return Promise.resolve({ error: 'My Notes has no window open' });
+  const id = ++agentSeq;
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => { agentPending.delete(id); resolve({ error: 'My Notes took too long to answer' }); }, 60000);
+    agentPending.set(id, (r) => { clearTimeout(timer); resolve(r); });
+    win.webContents.send('agent:call', { id, tool: String(tool || ''), args: args && typeof args === 'object' ? args : {} });
+  });
+}
+
+function startAgentServer() {
+  if (agentServer || !agentAllowed()) return;
+  const sock = agentSocketPath();
+  try { fs.unlinkSync(sock); } catch { /* nothing left over */ }
+  agentServer = net.createServer((conn) => {
+    let buf = '';
+    conn.setEncoding('utf8');
+    conn.on('data', async (chunk) => {
+      buf += chunk;
+      if (buf.length > 20 * 1024 * 1024) { conn.destroy(); return; }
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl);
+        buf = buf.slice(nl + 1);
+        let req;
+        try { req = JSON.parse(line); } catch { continue; }
+        const res = agentAllowed() ? await askPage(req.tool, req.args) : { error: 'AI agent access is switched off in My Notes (File menu)' };
+        if (!conn.destroyed) conn.write(JSON.stringify({ id: req.id, ...res }) + '\n');
+      }
+    });
+    conn.on('error', () => {});
+  });
+  agentServer.on('error', (err) => logError('agent socket', err));
+  agentServer.listen(sock, () => { try { fs.chmodSync(sock, 0o600); } catch { /* best effort */ } });
+}
+function stopAgentServer() {
+  if (!agentServer) return;
+  agentServer.close();
+  agentServer = null;
+  try { fs.unlinkSync(agentSocketPath()); } catch { /* already gone */ }
+}
+app.on('will-quit', stopAgentServer);
+
+function setAgentAccess(on) {
+  const st = readSettings();
+  st.agentAccess = !!on;
+  writeSettings(st);
+  if (on) startAgentServer(); else stopAgentServer();
+  sendToWindow({ type: 'agentAccess', value: !!on, socket: agentSocketPath() });
+}
+
 // Writes a timestamped snapshot to the library's Exports folder, then hands it
 // to your email — an outside-the-machine paper trail for provenance.
 ipcMain.handle('email:draft', async (_e, { to, subject, body, html, defaultName, method }) => {
@@ -1094,6 +1171,12 @@ function buildMenu() {
           click: () => sendToWindow({ type: 'import' })
         },
         { label: 'Library Folder…', click: () => { chooseLibraryFolder().catch((err) => logError('library folder', err)); } },
+        {
+          label: 'Allow AI Agents to Read & Write Notes',
+          type: 'checkbox',
+          checked: agentAllowed(),
+          click: (item) => setAgentAccess(item.checked)
+        },
         { type: 'separator' },
         ...(isMac ? [{ role: 'close' }] : [{ role: 'quit' }])
       ]
@@ -1413,6 +1496,7 @@ app.whenReady().then(() => {
     createWindow();
     try { initSpell(); } catch (err) { logError('spell', err); }
     try { buildMenu(); } catch (err) { logError('menu', err); }
+    try { startAgentServer(); } catch (err) { logError('agent socket', err); }
     try { dailyBackup(); } catch (err) { logError('backup', err); }
     // This build is a customised fork: the upstream auto-updater would
     // silently replace it with stock NEO, so it stays off. Help → Check for

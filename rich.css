@@ -49,8 +49,9 @@ body.night {
 
 /* checklists: the box is drawn, and clicking it ticks the item */
 :is(.chapter-body, #aux-editor, .darling) ul.tasks { list-style: none; padding-left: 0.2em; }
-:is(.chapter-body, #aux-editor, .darling) ul.tasks > li { position: relative; padding-left: 1.75em; }
-:is(.chapter-body, #aux-editor, .darling) ul.tasks > li::before {
+:is(.chapter-body, #aux-editor, .darling) ul.tasks > li[data-checked] { position: relative; padding-left: 1.75em; }
+:is(.chapter-body, #aux-editor, .darling) ul.tasks > li:not([data-checked]) { list-style: disc; margin-left: 1.3em; }
+:is(.chapter-body, #aux-editor, .darling) ul.tasks > li[data-checked]::before {
   content: ''; position: absolute; left: 0.1em; top: 0.38em;
   width: 0.9em; height: 0.9em; box-sizing: border-box;
   border: 1.5px solid var(--rich-muted); border-radius: 3px; cursor: pointer;

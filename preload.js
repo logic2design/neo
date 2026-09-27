@@ -62,5 +62,9 @@ contextBridge.exposeInMainWorld('neo', {
   clipboardWrite: (data) => ipcRenderer.invoke('clipboard:write', data),
   clipboardRead: () => ipcRenderer.invoke('clipboard:read'),
 
+  // AI agents reading and writing notes (agent.js, mcp/neo-mcp.mjs)
+  onAgentCall: (cb) => ipcRenderer.on('agent:call', (_e, msg) => cb(msg)),
+  agentReply: (id, result) => ipcRenderer.send('agent:reply', id, result),
+
   onMenu: (cb) => ipcRenderer.on('menu', (_e, msg) => cb(msg))
 });

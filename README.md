@@ -77,7 +77,42 @@ Rich formatting on top of NEO, with the same interface:
 - **Import** keeps headings, lists, tables, links and pictures from .docx and .md (including Obsidian `![[embeds]]`).
 - **Exports**: links, lists, tables, code and pictures in every format. EPUB, Word and PDF embed the pictures. HTML and Markdown write them to a `<name>_images` folder beside the file. EPUB turns links to local files into plain text, since ebook readers can't reach your Mac.
 
-The new code lives in `rich.js` and `rich.css`, which keeps merges from upstream NEO simple. Auto-update is off in this fork, so upstream releases never replace it. Build with `npm run package`; the app lands in `dist/`.
+### AI agents (MCP): reading and writing notes
+
+Codex, Hermes, Claude and any other MCP client can list, search, read and write your notebooks (chapters and each book's Notes tab) in Markdown. They can't delete anything, export, or touch files outside the library.
+
+1. In My Notes, tick **File → Allow AI Agents to Read & Write Notes**. It's off until you do, and it only works while My Notes is open.
+2. Point your agent at the MCP server that ships inside the app. It runs on the app's own Node, so nothing else needs installing.
+
+**Codex** (`~/.codex/config.toml`):
+
+```toml
+[mcp_servers.my-notes]
+command = "/Applications/My Notes.app/Contents/MacOS/My Notes"
+args = ["/Applications/My Notes.app/Contents/Resources/app.asar.unpacked/mcp/neo-mcp.mjs"]
+env = { ELECTRON_RUN_AS_NODE = "1" }
+```
+
+**Hermes** (`~/.hermes/config.yaml`):
+
+```yaml
+mcp_servers:
+  my-notes:
+    command: "/Applications/My Notes.app/Contents/MacOS/My Notes"
+    args: ["/Applications/My Notes.app/Contents/Resources/app.asar.unpacked/mcp/neo-mcp.mjs"]
+    env:
+      ELECTRON_RUN_AS_NODE: "1"
+```
+
+**Claude Code**:
+
+```bash
+claude mcp add my-notes --env ELECTRON_RUN_AS_NODE=1 -- "/Applications/My Notes.app/Contents/MacOS/My Notes" "/Applications/My Notes.app/Contents/Resources/app.asar.unpacked/mcp/neo-mcp.mjs"
+```
+
+Tools: `list_notebooks`, `read_note`, `write_note` (append / prepend / replace), `add_chapter`, `create_notebook`, `search_notes`, `read_notes_tab`, `write_notes_tab`. Edits to the open book appear straight away, with a notice, and ⌘Z undoes them. The server (`mcp/neo-mcp.mjs`) reaches the app through a socket only your Mac account can open; the app does the actual reading and writing (`agent.js`).
+
+The new code lives in `rich.js`, `rich.css` and `agent.js`, which keeps merges from upstream NEO simple. Auto-update is off in this fork, so upstream releases never replace it. Build with `npm run package`; the app lands in `dist/`.
 
 ## Your files
 
