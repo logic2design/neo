@@ -2415,6 +2415,12 @@ async function moveSelectionToDarlings(html, text) {
 
   let anchorPrefix = null;
   let anchorSuffix = null;
+  // for a passage that was whole paragraphs: the block it sat after (or
+  // before) — pictures and tables have no words, so the surrounding text
+  // alone can't tell "after the picture" from "end of the paragraph above"
+  let anchorAfter = null;
+  let anchorBefore = null;
+  let wholeBlocks = false;
   if (range) {
     const startNode = range.startContainer.nodeType === Node.TEXT_NODE ? range.startContainer.parentElement : range.startContainer;
     const startBlock = startNode && startNode.closest ? startNode.closest('p') : null;
@@ -2425,6 +2431,8 @@ async function moveSelectionToDarlings(html, text) {
         && startBlock.parentElement && startBlock.parentElement.children.length > 1) {
       const prev = startBlock.previousElementSibling;
       const next = startBlock.nextElementSibling;
+      wholeBlocks = true;
+      if (prev) anchorAfter = blockSig(prev); else if (next) anchorBefore = blockSig(next);
       startBlock.remove();
       if (prev) { range.selectNodeContents(prev); range.collapse(false); }
       else if (next) { range.selectNodeContents(next); range.collapse(true); }
@@ -2457,7 +2465,14 @@ async function moveSelectionToDarlings(html, text) {
   let cleanHtml = null;
   if (html) {
     const cleaned = cleanPasteHtml(html);
-    cleanHtml = /\n/.test(text.trim()) && !RICH_BLOCK_HTML.test(cleaned) ? '<p>' + cleaned + '</p>' : cleaned;
+    cleanHtml = (wholeBlocks || /\n/.test(text.trim())) && !RICH_BLOCK_HTML.test(cleaned) ? '<p>' + cleaned + '</p>' : cleaned;
+    // words cut from inside a sentence keep the spaces at their edges, so
+    // they read right when they go back in
+    if (!RICH_BLOCK_HTML.test(cleanHtml)) {
+      const lead = (text.match(/^[ \t]+/) || [''])[0];
+      const trail = (text.match(/[ \t]+$/) || [''])[0];
+      cleanHtml = lead + cleanHtml + trail;
+    }
   }
   darlings.unshift({
     id: did,
@@ -2467,6 +2482,8 @@ async function moveSelectionToDarlings(html, text) {
     chapterLabel: chIdx >= 0 ? 'Chapter ' + (chIdx + 1) : 'Manuscript',
     anchorPrefix,
     anchorSuffix,
+    anchorAfter,
+    anchorBefore,
     date: new Date().toISOString()
   });
   await window.neo.writeJSON(book.id, 'darlings', darlings);
@@ -2891,8 +2908,30 @@ async function restoreDarling(id) {
   snapshotStructure('darling restore');
   switchTab('manuscript');
 
-  // Preferred: put it back in the exact spot it was cut from, located by
-  // the remembered text surrounding the cut point
+  // Whole paragraphs go back beside the block they were cut next to
+  if (d.chapterId && book.chapterOrder.includes(d.chapterId) && d.html && RICH_BLOCK_HTML.test(d.html) && (d.anchorAfter || d.anchorBefore)) {
+    const body = document.querySelector(`.chapter[data-id="${d.chapterId}"] .chapter-body`);
+    const pos = body ? findDarlingPosition(body, d) : -1;
+    const near = pos !== -1 ? textPosToRange(body, pos) : null;
+    const ref = body && findBlockBySig(body, d.anchorAfter || d.anchorBefore, near);
+    if (ref) {
+      const holder = document.createElement('div');
+      holder.innerHTML = d.html;
+      const nodes = [...holder.childNodes];
+      if (d.anchorAfter) { let at = ref; for (const n of nodes) { at.after(n); at = n; } }
+      else ref.before(...nodes);
+      richNormalize(body);
+      syncChapter(body, d.chapterId);
+      darlings = darlings.filter((x) => x.id !== id);
+      await window.neo.writeJSON(book.id, 'darlings', darlings);
+      (holder.firstElementChild || nodes[0] || ref).scrollIntoView?.({ behavior: 'smooth', block: 'center' });
+      toast('Darling restored to its original spot');
+      return;
+    }
+  }
+
+  // Otherwise: the exact spot it was cut from, located by the remembered
+  // text surrounding the cut point
   if (d.chapterId && book.chapterOrder.includes(d.chapterId)) {
     const body = document.querySelector(`.chapter[data-id="${d.chapterId}"] .chapter-body`);
     const pos = body ? findDarlingPosition(body, d) : -1;
@@ -2908,7 +2947,9 @@ async function restoreDarling(id) {
           scrollTo = holder.firstElementChild || scrollTo;
           for (const n of [...holder.childNodes]) { ref.after(n); ref = n; }
         } else {
-          // inline content: slot it right where the caret was
+          // inline content: slot it right where the caret was — outside a
+          // link it merely touches, never tacked onto the link's own words
+          outsideLinkEdge(at);
           at.insertNode(document.createRange().createContextualFragment(d.html || d.text));
         }
         syncChapter(body, d.chapterId);

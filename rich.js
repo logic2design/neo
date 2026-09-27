@@ -1969,6 +1969,7 @@ function richNormalize(root) {
   for (const f of root.querySelectorAll('font')) unwrapEl(f);
   for (const f of root.querySelectorAll('figure')) {
     if (!f.querySelector('img')) { f.remove(); continue; }
+    if (f.classList.contains('selected') && (typeof picFig === 'undefined' || f !== picFig)) f.classList.remove('selected');
     if (f.contentEditable !== 'false') f.contentEditable = 'false';
     f.classList.add('neo-img');
   }
@@ -2166,6 +2167,39 @@ function codeSelection(root, text) {
     return [blk, pre.toString().length];
   });
   armEscape(code);
+}
+
+/* ---------- darlings: where a cut passage belongs ---------- */
+
+// a block's fingerprint: its kind, its picture if any, and its first words
+function blockSig(el) {
+  if (!el || el.nodeType !== 1) return null;
+  const img = el.querySelector && el.querySelector('img');
+  return [el.tagName, (img && img.dataset.src) || '', el.textContent.replace(/\s+/g, ' ').trim().slice(0, 80)].join('|');
+}
+
+// the block with that fingerprint; if several match, the one nearest the
+// remembered text position
+function findBlockBySig(body, sig, near) {
+  if (!sig) return null;
+  const all = [...body.querySelectorAll(':scope > *, :scope > blockquote > *')].filter((el) => blockSig(el) === sig);
+  if (all.length <= 1 || !near) return all[0] || null;
+  const y = near.getBoundingClientRect().top;
+  return all.reduce((best, el) => (Math.abs(el.getBoundingClientRect().top - y) < Math.abs(best.getBoundingClientRect().top - y) ? el : best));
+}
+
+// a restore point at the very start or end of a link moves just outside it
+function outsideLinkEdge(range) {
+  const n = range.startContainer;
+  const a = n.nodeType === 3 ? n.parentElement.closest('a') : n.closest && n.closest('a');
+  if (!a) return;
+  const r = document.createRange();
+  r.selectNodeContents(a);
+  r.setEnd(range.startContainer, range.startOffset);
+  const before = r.toString().length;
+  if (before === a.textContent.length) range.setStartAfter(a);
+  else if (before === 0) range.setStartBefore(a);
+  range.collapse(true);
 }
 
 /* ---------- commands ---------- */
