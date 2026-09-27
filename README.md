@@ -59,6 +59,24 @@ Bring in existing .docx, .txt, and .md manuscripts; chapters and scene breaks ar
 
 Continuous autosave, daily zip backups kept for two weeks, everything stored as plain files. Set up your NEO library folder on your iCloud if you want for extra safety. You can also email copies of your WIP to yourself with a keystroke: ⌘E.
 
+## My Notes additions (this fork)
+
+Rich formatting on top of NEO, with the same interface:
+
+- **Formatting bar**: fades in when the pointer nears the top of the page or text is selected (Format → Keep Formatting Bar Visible pins it).
+- **Links** (⌘K): web pages, email, or any file or folder on this Mac. ⌘-click opens; click a link for Open / Edit / Remove. Links to local files have a dotted underline.
+- **Headings** (⌘⌥1–3), **block quotes** (⌘⌥Q), **code blocks** (⌘⌥C), **inline code** (⌘⇧C), **strikethrough** (⌘⇧S), **rules** (⌘⌥R).
+- **Lists**: bulleted (⌘⇧8), numbered (⌘⇧7), checklists (⌘⇧9). Tab / ⇧Tab nest them.
+- **Tables** (⌘⌥T): Tab moves between cells; right-click a cell for rows, columns, header and alignment.
+- **Pictures** (⌘⇧P, drag-and-drop, or paste): copied into the book's `images/` folder by default, or linked to a file on disk or on the web. Click one for size, caption, replace, remove.
+- **Markdown while typing**: `# `, `- `, `1. `, `[ ] `, `> `, ```` ``` ````, `---`, `**bold**`, `*italic*`, `` `code` ``, `~~strike~~`, `[text](url)`, `![alt](src)`. Toggle under Format.
+- **Darlings**: select a passage and click the heart on the formatting bar (or ⌘⇧D, or drag it onto the Darlings tab).
+- **Paste** keeps structure from web pages, Word, Google Docs and Markdown text, and drops fonts and colours.
+- **Import** keeps headings, lists, tables, links and pictures from .docx and .md (including Obsidian `![[embeds]]`).
+- **Exports**: links, lists, tables, code and pictures in every format. EPUB, Word and PDF embed the pictures. HTML and Markdown write them to a `<name>_images` folder beside the file. EPUB turns links to local files into plain text, since ebook readers can't reach your Mac.
+
+The new code lives in `rich.js` and `rich.css`, which keeps merges from upstream NEO simple. Auto-update is off in this fork, so upstream releases never replace it. Build with `npm run package`; the app lands in `dist/`.
+
 ## Your files
 
 Everything lives in `~/Documents/NEO Library` — one folder per book, chapters as readable HTML, metadata as JSON. Open them in your favorite text editor.

@@ -42,5 +42,15 @@ contextBridge.exposeInMainWorld('neo', {
   appVersion: () => ipcRenderer.invoke('app:version'),
   openRelease: () => ipcRenderer.invoke('update:openRelease'),
 
+  // pictures, documents and links inside the writing
+  homeDir: () => ipcRenderer.invoke('app:homeDir'),
+  pickImage: () => ipcRenderer.invoke('asset:pickImage'),
+  pickFile: () => ipcRenderer.invoke('asset:pickFile'),
+  importImage: (bookId, srcPath) => ipcRenderer.invoke('asset:importImage', bookId, srcPath),
+  saveImageData: (bookId, base64, ext, base) => ipcRenderer.invoke('asset:saveImageData', bookId, base64, ext, base),
+  readAsset: (bookId, src) => ipcRenderer.invoke('asset:read', bookId, src),
+  openLink: (href, bookId) => ipcRenderer.invoke('link:open', href, bookId),
+  setMenuChecked: (states) => ipcRenderer.invoke('menu:setChecked', states),
+
   onMenu: (cb) => ipcRenderer.on('menu', (_e, msg) => cb(msg))
 });

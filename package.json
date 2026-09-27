@@ -1,8 +1,8 @@
 {
   "name": "neo",
-  "productName": "NEO",
-  "version": "0.7.10",
-  "description": "A word processor for authors. Distraction-free by default.",
+  "productName": "My Notes",
+  "version": "0.7.10-notes.1",
+  "description": "NEO with links, lists, tables, code, quotes, headings and pictures. Distraction-free by default.",
   "homepage": "https://github.com/hughhowey/neo",
   "main": "main.js",
   "scripts": {
@@ -13,28 +13,21 @@
     "package:all": "electron-builder --mac --win --linux"
   },
   "build": {
-    "appId": "com.hughhowey.neo",
-    "productName": "NEO",
-    "publish": {
-      "provider": "github",
-      "owner": "hughhowey",
-      "repo": "neo"
-    },
+    "appId": "com.ijd65.mynotes",
+    "productName": "My Notes",
     "mac": {
       "category": "public.app-category.productivity",
       "target": [
         {
           "target": "dmg",
           "arch": [
-            "arm64",
-            "x64"
+            "arm64"
           ]
         },
         {
           "target": "zip",
           "arch": [
-            "arm64",
-            "x64"
+            "arm64"
           ]
         }
       ],
@@ -42,7 +35,8 @@
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
-      "notarize": true
+      "notarize": false,
+      "identity": null
     },
     "win": {
       "target": [

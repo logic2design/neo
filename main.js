@@ -268,6 +268,161 @@ ipcMain.handle('cover:read', (_e, bookId, fname) => {
 });
 
 // ---------------------------------------------------------------------------
+// Pictures and links inside the writing. A picture "in the book" is copied
+// into the book's images/ folder and referenced relatively (images/x.png),
+// so it travels with the library; linked pictures and documents stay where
+// they are and are referenced by file:// or web address.
+// ---------------------------------------------------------------------------
+
+const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'avif'];
+const MIME_BY_EXT = {
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp',
+  svg: 'image/svg+xml', bmp: 'image/bmp', avif: 'image/avif'
+};
+
+// a path inside one book's folder, or null if it would escape it
+function insideBook(bookId, rel) {
+  if (!/^book-[\w-]+$/.test(String(bookId || '')) || !rel) return null;
+  const root = bookDir(bookId);
+  const full = path.resolve(root, String(rel));
+  return full.startsWith(root + path.sep) ? full : null;
+}
+
+// images/<readable-name>.<ext>, never overwriting a picture already there
+function newImageName(bookId, base, ext) {
+  const dir = path.join(bookDir(bookId), 'images');
+  fs.mkdirSync(dir, { recursive: true });
+  const slug = String(base || 'image').toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'image';
+  let name = `${slug}.${ext}`;
+  for (let n = 2; fs.existsSync(path.join(dir, name)); n++) name = `${slug}-${n}.${ext}`;
+  return { full: path.join(dir, name), rel: 'images/' + name };
+}
+
+function sniffImage(buf) {
+  if (buf[0] === 0x89 && buf[1] === 0x50) return 'png';
+  if (buf[0] === 0xff && buf[1] === 0xd8) return 'jpg';
+  if (buf.slice(0, 3).toString() === 'GIF') return 'gif';
+  if (buf.slice(0, 4).toString() === 'RIFF' && buf.slice(8, 12).toString() === 'WEBP') return 'webp';
+  if (/<svg[\s>]/i.test(buf.slice(0, 2048).toString())) return 'svg';
+  return null;
+}
+
+ipcMain.handle('app:homeDir', () => os.homedir());
+
+ipcMain.handle('asset:pickImage', async () => {
+  const win = BrowserWindow.getFocusedWindow();
+  const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+    title: 'Choose a picture',
+    properties: ['openFile'],
+    filters: [{ name: 'Images', extensions: IMAGE_EXTS }]
+  });
+  return canceled || !filePaths.length ? null : filePaths[0];
+});
+
+ipcMain.handle('asset:pickFile', async () => {
+  const win = BrowserWindow.getFocusedWindow();
+  const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+    title: 'Link to a document',
+    properties: ['openFile', 'openDirectory']
+  });
+  return canceled || !filePaths.length ? null : filePaths[0];
+});
+
+// copy a picture from anywhere on disk into the book
+ipcMain.handle('asset:importImage', (_e, bookId, srcPath) => {
+  try {
+    if (!insideBook(bookId, 'images') || !fs.existsSync(srcPath)) return null;
+    let ext = path.extname(srcPath).toLowerCase().slice(1);
+    if (!IMAGE_EXTS.includes(ext)) ext = sniffImage(fs.readFileSync(srcPath)) || '';
+    if (!ext) return null;
+    const { full, rel } = newImageName(bookId, path.basename(srcPath, path.extname(srcPath)), ext === 'jpeg' ? 'jpg' : ext);
+    fs.copyFileSync(srcPath, full);
+    return rel;
+  } catch (err) {
+    logError('asset:import', err);
+    return null;
+  }
+});
+
+// a picture that only exists as bytes (pasted screenshot, image inside a .docx)
+ipcMain.handle('asset:saveImageData', (_e, bookId, base64, ext, base) => {
+  try {
+    if (!insideBook(bookId, 'images')) return null;
+    const buf = Buffer.from(String(base64 || ''), 'base64');
+    ext = String(ext || '').toLowerCase().replace('jpeg', 'jpg');
+    if (!IMAGE_EXTS.includes(ext)) ext = sniffImage(buf) || 'png';
+    const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+    const { full, rel } = newImageName(bookId, base || 'pasted-' + stamp, ext);
+    fs.writeFileSync(full, buf);
+    return rel;
+  } catch (err) {
+    logError('asset:save', err);
+    return null;
+  }
+});
+
+// the bytes of any picture the writing refers to, for exports that embed them
+ipcMain.handle('asset:read', async (_e, bookId, src) => {
+  try {
+    src = String(src || '');
+    let buf = null;
+    let type = '';
+    if (/^https?:/i.test(src)) {
+      const res = await fetch(src, { signal: AbortSignal.timeout(20000), headers: { 'User-Agent': 'NEO' } });
+      if (!res.ok) return null;
+      type = (res.headers.get('content-type') || '').split(';')[0];
+      buf = Buffer.from(await res.arrayBuffer());
+    } else if (/^data:/i.test(src)) {
+      const m = src.match(/^data:([^;,]+)(;base64)?,(.*)$/s);
+      if (!m) return null;
+      type = m[1];
+      buf = m[2] ? Buffer.from(m[3], 'base64') : Buffer.from(decodeURIComponent(m[3]));
+    } else {
+      const p = /^file:/i.test(src) ? require('url').fileURLToPath(src) : insideBook(bookId, decodeURIComponent(src));
+      if (!p || !fs.existsSync(p)) return null;
+      buf = fs.readFileSync(p);
+    }
+    if (!buf || buf.length > 60 * 1024 * 1024) return null;
+    const ext = sniffImage(buf) ||
+      Object.keys(MIME_BY_EXT).find((k) => MIME_BY_EXT[k] === type) ||
+      path.extname(src.split(/[?#]/)[0]).toLowerCase().slice(1);
+    if (!MIME_BY_EXT[ext]) return null;
+    return { base64: buf.toString('base64'), mime: MIME_BY_EXT[ext], ext: ext === 'jpeg' ? 'jpg' : ext };
+  } catch (err) {
+    logError('asset:read', err);
+    return null;
+  }
+});
+
+// Opening a link: web and mail go to the browser / mail app, documents open
+// in whatever app the Mac uses for them. Things that would *run* rather than
+// open are only revealed in Finder.
+const RUNNABLE = /\.(app|command|sh|tool|pkg|mpkg|workflow|scpt|scptd|terminal|exe|bat|jar)$/i;
+ipcMain.handle('link:open', async (_e, href, bookId) => {
+  const { shell } = require('electron');
+  try {
+    href = String(href || '');
+    if (/^(https?|mailto|tel):/i.test(href)) {
+      await shell.openExternal(href);
+      return true;
+    }
+    let p = null;
+    if (/^file:/i.test(href)) p = require('url').fileURLToPath(href.split('#')[0]);
+    else if (!/^[a-z][a-z0-9+.-]*:/i.test(href)) p = insideBook(bookId, decodeURIComponent(href.split(/[?#]/)[0]));
+    if (!p || !fs.existsSync(p)) return false;
+    if (RUNNABLE.test(p.replace(/\/+$/, ''))) {
+      shell.showItemInFolder(p);
+      return true;
+    }
+    return !(await shell.openPath(p));
+  } catch (err) {
+    logError('link:open', err);
+    return false;
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Painted covers: once a story passes a thousand words, NEO reads it and
 // paints an abstract cover (art.js). The API key lives encrypted in the
 // app's own data folder — never in the library, which gets synced and
@@ -381,11 +536,15 @@ ipcMain.handle('fullscreen:escape', (e) => {
 // ---------------------------------------------------------------------------
 
 async function renderPDF(html) {
-  const pdfWin = new BrowserWindow({ show: false, webPreferences: { sandbox: true } });
+  // printed from a temp file rather than a data: URL, so pictures on disk
+  // (the book's images folder, linked local files) can load
+  const tmp = path.join(os.tmpdir(), `neo-print-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.html`);
+  fs.writeFileSync(tmp, html, 'utf8');
+  const pdfWin = new BrowserWindow({ show: false, webPreferences: { sandbox: true, javascript: false } });
   // Letter is a North American habit; most of the world prints A4.
   const letterCountries = ['US', 'CA', 'MX', 'PH'];
   try {
-    await pdfWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+    await pdfWin.loadFile(tmp);
     return await pdfWin.webContents.printToPDF({
       pageSize: letterCountries.includes(app.getLocaleCountryCode()) ? 'Letter' : 'A4',
       margins: { top: 1, bottom: 1, left: 1, right: 1 },
@@ -393,6 +552,7 @@ async function renderPDF(html) {
     });
   } finally {
     pdfWin.destroy();
+    try { fs.unlinkSync(tmp); } catch { /* temp files clean themselves up eventually */ }
   }
 }
 
@@ -412,7 +572,7 @@ async function buildZip(zipEntries) {
   });
 }
 
-ipcMain.handle('export:save', async (_e, { format, defaultName, content, zipEntries }) => {
+ipcMain.handle('export:save', async (_e, { format, defaultName, content, zipEntries, assets }) => {
   const win = BrowserWindow.getFocusedWindow();
   const { canceled, filePath } = await dialog.showSaveDialog(win, {
     defaultPath: path.join(os.homedir(), 'Documents', defaultName + '.' + format),
@@ -424,7 +584,20 @@ ipcMain.handle('export:save', async (_e, { format, defaultName, content, zipEntr
   } else if (format === 'pdf') {
     fs.writeFileSync(filePath, await renderPDF(content));
   } else {
-    fs.writeFileSync(filePath, content, 'utf8');
+    let out = content;
+    // pictures stored inside the book travel beside the export, in a
+    // "<name>_images" folder the page links to relatively
+    if (assets && assets.length) {
+      const dirName = path.basename(filePath, path.extname(filePath)) + '_images';
+      const dir = path.join(path.dirname(filePath), dirName);
+      fs.mkdirSync(dir, { recursive: true });
+      for (const a of assets) {
+        const src = insideBook(a.bookId, a.src);
+        if (src && fs.existsSync(src)) fs.copyFileSync(src, path.join(dir, path.basename(a.name)));
+      }
+      out = out.split('NEO-ASSET-DIR/').join(encodeURI(dirName) + '/');
+    }
+    fs.writeFileSync(filePath, out, 'utf8');
   }
   return filePath;
 });
@@ -476,109 +649,31 @@ ipcMain.handle('email:draft', async (_e, { to, subject, body, html, defaultName,
 // Import: .docx / .txt / .md → chapters
 // ---------------------------------------------------------------------------
 
-const decodeEntities = (s) => s
-  .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-  .replace(/&quot;/g, '"').replace(/&apos;/g, "'");
-
+// The main process only reads the file. The renderer, which has real
+// HTML and XML parsers, turns it into chapters with their headings, lists,
+// tables, links and pictures intact (see rich.js → parseImportedManuscript).
 async function importFile(fp) {
   const name = path.basename(fp).replace(/\.[^.]+$/, '');
   const ext = path.extname(fp).toLowerCase();
-  let paras = [];
-
   if (ext === '.docx') {
     const JSZip = require('jszip');
     const zip = await JSZip.loadAsync(fs.readFileSync(fp));
-    const docFile = zip.file('word/document.xml');
-    if (!docFile) throw new Error('Not a valid .docx: ' + fp);
-    const xml = await docFile.async('string');
-    paras = [...xml.matchAll(/<w:p[ >][\s\S]*?<\/w:p>/g)].map((m) => {
-      const p = m[0];
-      // <w:t> or <w:t attr...> ONLY — never <w:tab>/<w:tabs>, which share
-      // the same first letters and once leaked raw XML into a manuscript
-      const text = [...p.matchAll(/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g)]
-        .map((t) => decodeEntities(t[1])).join('');
-      const pageBreak = /<w:br [^>]*w:type="page"/.test(p) || /<w:pageBreakBefore/.test(p);
-      return { text: text.trim(), pageBreak };
-    });
-  } else {
-    const raw = fs.readFileSync(fp, 'utf8');
-    paras = raw.split(/\r?\n\s*\r?\n/)
-      .map((b) => ({ text: b.replace(/\s*\r?\n\s*/g, ' ').trim(), pageBreak: false }))
-      .filter((p) => p.text);
-  }
-
-  // Chapterize: page breaks and heading lines start new chapters. Headings
-  // include "Chapter N" styles plus bare chapter numbers — "7", "VII",
-  // "Seven" — which get stripped so NEO's own numbering doesn't duplicate them.
-  const SPELLED = /^(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\.?$/i;
-  const isNumeralish = (t) => /^\d{1,3}\.?$/.test(t) || /^[IVXLC]{1,7}\.?$/.test(t) || SPELLED.test(t);
-  // Bare numbers only count as chapter markers when there's a ladder of them —
-  // a story that merely OPENS with "Seven." keeps its seven.
-  const numeralMode = paras.filter((p) => p.text && isNumeralish(p.text.trim())).length >= 2;
-  const isHeading = (t) => t && (
-    (/^(chapter|prologue|epilogue|part)\b/i.test(t) && t.length < 60) ||
-    (numeralMode && isNumeralish(t))
-  );
-  const isBreak = (t) => /^\s*([*#•~⁂—–-]\s*){1,7}$/.test(t || '');
-
-  const chapterize = (usePageBreaks) => {
-    const chapters = [];
-    let cur = [];
-    for (const p of paras) {
-      const brk = usePageBreaks && p.pageBreak;
-      if (!p.text && !brk) continue;
-      if ((brk || isHeading(p.text)) && cur.length) {
-        chapters.push(cur);
-        cur = [];
-      }
-      if (isHeading(p.text)) continue; // the heading line itself is replaced by NEO's numbering
-      if (isBreak(p.text)) { cur.push({ scene: true }); continue; }
-      if (p.text) cur.push({ text: p.text });
+    const part = async (p) => (zip.file(p) ? zip.file(p).async('string') : '');
+    const xml = await part('word/document.xml');
+    if (!xml) throw new Error('Not a valid .docx: ' + fp);
+    const media = {};
+    for (const f of Object.keys(zip.files)) {
+      if (/^word\/media\/[^/]+$/.test(f)) media[f] = await zip.file(f).async('base64');
     }
-    if (cur.length) chapters.push(cur);
-    return chapters;
-  };
-
-  const countAllWords = (list) =>
-    list.reduce((n, ch) => n + ch.reduce((m, p) => m + (p.text ? p.text.trim().split(/\s+/).length : 0), 0), 0);
-
-  // First pass trusts page breaks. Some word processors sprinkle page-break
-  // formatting on every paragraph, exploding a story into confetti — if the
-  // result is absurd (lots of tiny "chapters"), re-run trusting headings only.
-  let chapters = chapterize(true);
-  if (chapters.length > 6 && countAllWords(chapters) / chapters.length < 250) {
-    chapters = chapterize(false);
+    return {
+      name, kind: 'docx', dir: path.dirname(fp), xml,
+      rels: await part('word/_rels/document.xml.rels'),
+      styles: await part('word/styles.xml'),
+      numbering: await part('word/numbering.xml'),
+      media
+    };
   }
-  if (!chapters.length) chapters.push([{ text: '' }]);
-
-  // Front matter: a short title line and a "by Author" line belong on the
-  // title page, not in the body. Detect, harvest, and remove them.
-  let title = null;
-  let author = null;
-  const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
-  const first = chapters[0];
-  if (first && first.length) {
-    const t0 = (first[0].text || '').trim();
-    const t1 = first.length > 1 ? (first[1].text || '').trim() : '';
-    const titleish = t0 && t0.length < 90 && !/[.!?]$/.test(t0) && (
-      (norm(t0).length > 3 && norm(name).includes(norm(t0))) ||
-      /^by\s+\S/i.test(t1) ||
-      (t0 === t0.toUpperCase() && /[A-Z].*[A-Z]/.test(t0) && t0.length < 60)
-    );
-    if (titleish) {
-      title = t0;
-      first.shift();
-    }
-    const bl = first.length ? (first[0].text || '').trim().match(/^by\s+(.{2,60})$/i) : null;
-    if (bl) {
-      author = bl[1].trim();
-      first.shift();
-    }
-    if (!first.length) chapters.shift();
-    if (!chapters.length) chapters.push([{ text: '' }]);
-  }
-
-  return { name, title, author, chapters };
+  return { name, kind: ext === '.md' ? 'md' : 'txt', dir: path.dirname(fp), text: fs.readFileSync(fp, 'utf8') };
 }
 
 // Same parsing as the picker, but for files dropped from Finder/Explorer
@@ -690,6 +785,13 @@ function createWindow() {
   });
   win.loadFile('index.html');
 
+  // The window never leaves NEO: a dropped file or a stray link click would
+  // otherwise replace the whole app with that page. Links open via link:open.
+  win.webContents.on('will-navigate', (e, url) => {
+    if (url !== win.webContents.getURL()) e.preventDefault();
+  });
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+
   // NEO does its own spellchecking (see spell:* handlers) — the engine's
   // checker proved unreliable at scanning existing text, so it stays off
   win.webContents.session.setSpellCheckerEnabled(false);
@@ -738,6 +840,20 @@ function sendToWindow(msg) {
   const w = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
   if (w) w.webContents.send('menu', msg);
 }
+
+// formatting commands all travel as one message type
+const rich = (cmd) => () => sendToWindow({ type: 'rich', cmd });
+
+// the renderer owns these settings (they live in library.json); the menu
+// just mirrors them
+ipcMain.handle('menu:setChecked', (_e, states) => {
+  const menu = Menu.getApplicationMenu();
+  for (const [id, on] of Object.entries(states || {})) {
+    const item = menu && menu.getMenuItemById(id);
+    if (item) item.checked = !!on;
+  }
+  return true;
+});
 
 function buildMenu() {
   const isMac = process.platform === 'darwin';
@@ -831,6 +947,61 @@ function buildMenu() {
             { label: 'Right', click: () => sendToWindow({ type: 'align', value: 'right' }) },
             { label: 'Justify', click: () => sendToWindow({ type: 'align', value: 'justify' }) }
           ]
+        },
+        { type: 'separator' },
+        {
+          label: 'Text',
+          submenu: [
+            { label: 'Bold', accelerator: 'CmdOrCtrl+B', registerAccelerator: false, click: rich('bold') },
+            { label: 'Italic', accelerator: 'CmdOrCtrl+I', registerAccelerator: false, click: rich('italic') },
+            { label: 'Strikethrough', accelerator: 'CmdOrCtrl+Shift+S', click: rich('strike') },
+            { label: 'Inline Code', accelerator: 'CmdOrCtrl+Shift+C', click: rich('code') },
+            { type: 'separator' },
+            { label: 'Link…', accelerator: 'CmdOrCtrl+K', click: rich('link') },
+            { label: 'Clear Formatting', click: rich('clear') }
+          ]
+        },
+        {
+          label: 'Paragraph Style',
+          submenu: [
+            { label: 'Body Text', accelerator: 'CmdOrCtrl+Alt+0', click: rich('p') },
+            { label: 'Heading 1', accelerator: 'CmdOrCtrl+Alt+1', click: rich('h1') },
+            { label: 'Heading 2', accelerator: 'CmdOrCtrl+Alt+2', click: rich('h2') },
+            { label: 'Heading 3', accelerator: 'CmdOrCtrl+Alt+3', click: rich('h3') },
+            { type: 'separator' },
+            { label: 'Block Quote', accelerator: 'CmdOrCtrl+Alt+Q', click: rich('quote') },
+            { label: 'Code Block', accelerator: 'CmdOrCtrl+Alt+C', click: rich('codeblock') }
+          ]
+        },
+        {
+          label: 'Lists',
+          submenu: [
+            { label: 'Bulleted List', accelerator: 'CmdOrCtrl+Shift+8', click: rich('ul') },
+            { label: 'Numbered List', accelerator: 'CmdOrCtrl+Shift+7', click: rich('ol') },
+            { label: 'Checklist', accelerator: 'CmdOrCtrl+Shift+9', click: rich('task') }
+          ]
+        },
+        {
+          label: 'Insert',
+          submenu: [
+            { label: 'Image…', accelerator: 'CmdOrCtrl+Shift+P', click: rich('image') },
+            { label: 'Table…', accelerator: 'CmdOrCtrl+Alt+T', click: rich('table') },
+            { label: 'Horizontal Rule', accelerator: 'CmdOrCtrl+Alt+R', click: rich('hr') }
+          ]
+        },
+        {
+          id: 'mdShortcuts',
+          label: 'Markdown Shortcuts While Typing',
+          type: 'checkbox',
+          checked: true,
+          click: (item) => sendToWindow({ type: 'mdShortcuts', value: item.checked })
+        },
+        {
+          id: 'fmtBarPinned',
+          label: 'Keep Formatting Bar Visible',
+          type: 'checkbox',
+          checked: false,
+          click: (item) => sendToWindow({ type: 'fmtBarPinned', value: item.checked })
         },
         { type: 'separator' },
         { label: 'Larger Text', accelerator: 'CmdOrCtrl+=', click: () => sendToWindow({ type: 'fontSize', value: 1 }) },
@@ -987,7 +1158,7 @@ app.whenReady().then(() => {
   try {
     // the real Documents folder (handles OneDrive-redirected Windows setups)
     try {
-      LIBRARY_DIR = path.join(app.getPath('documents'), 'NEO Library');
+      LIBRARY_DIR = process.env.NEO_LIBRARY_DIR || path.join(app.getPath('documents'), 'NEO Library');
       LIBRARY_FILE = path.join(LIBRARY_DIR, 'library.json');
     } catch (err) {
       logError('paths', err);
@@ -1014,7 +1185,12 @@ app.whenReady().then(() => {
     try { initSpell(); } catch (err) { logError('spell', err); }
     try { buildMenu(); } catch (err) { logError('menu', err); }
     try { dailyBackup(); } catch (err) { logError('backup', err); }
-    try { checkForUpdates(); } catch (err) { logError('updater', err); }
+    // This build is a customised fork: the upstream auto-updater would
+    // silently replace it with stock NEO, so it stays off. Help → Check for
+    // Update… still reports upstream releases without installing anything.
+    if (process.env.NEO_AUTO_UPDATE === '1') {
+      try { checkForUpdates(); } catch (err) { logError('updater', err); }
+    }
   } catch (err) {
     // catastrophic: tell the human instead of dying in silence
     logError('startup', err);

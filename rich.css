@@ -1,0 +1,208 @@
+/* ============================ NEO · RICH ============================ */
+/* Headings, quotes, lists, checklists, code, tables, rules, pictures,  */
+/* links — styled to sit quietly on the page like the rest of NEO.      */
+
+:root {
+  --rich-rule: #d8d1c2;
+  --rich-soft: rgba(28, 28, 28, 0.045);
+  --rich-code: rgba(28, 28, 28, 0.06);
+  --rich-link: #8a6a2c;
+  --rich-muted: #8b8576;
+  --mono: "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace;
+}
+body.night {
+  --rich-rule: #3d3a35;
+  --rich-soft: rgba(255, 255, 255, 0.035);
+  --rich-code: rgba(255, 255, 255, 0.07);
+  --rich-link: #d8b877;
+  --rich-muted: #8a8476;
+}
+
+/* the drop cap and the unindented opener belong to the chapter's own first
+   paragraph, never to one inside a quote or list */
+.chapter-body > p:first-of-type { text-indent: 0; }
+
+:is(.chapter-body, #aux-editor, .darling) :is(h1, h2, h3, h4, h5, h6) {
+  font-family: var(--body-font); font-weight: 700; line-height: 1.3;
+  margin: 1.35em 0 0.45em; white-space: pre-wrap; text-indent: 0;
+}
+:is(.chapter-body, #aux-editor, .darling) h1 { font-size: 1.45em; }
+:is(.chapter-body, #aux-editor, .darling) h2 { font-size: 1.24em; }
+:is(.chapter-body, #aux-editor, .darling) :is(h3, h4, h5, h6) { font-size: 1.07em; }
+.chapter-body > :is(h1, h2, h3):first-child { margin-top: 0; }
+
+/* prose after any non-paragraph starts flush, like after a scene break */
+.chapter-body > :is(h1, h2, h3, blockquote, ul, ol, pre, table, figure, hr) + p { text-indent: 0; }
+
+:is(.chapter-body, #aux-editor, .darling) blockquote {
+  margin: 0.9em 0 0.9em 0.15em; padding: 0.05em 0 0.05em 1.15em;
+  border-left: 3px solid var(--accent); color: color-mix(in srgb, var(--ink) 82%, transparent);
+}
+:is(.chapter-body, #aux-editor, .darling) blockquote p { text-indent: 0; }
+.chapter-body blockquote p + p { margin-top: 0.5em; }
+
+:is(.chapter-body, #aux-editor, .darling) :is(ul, ol) { margin: 0.55em 0; padding-left: 1.75em; }
+:is(.chapter-body, #aux-editor, .darling) li { margin: 0.12em 0; white-space: pre-wrap; text-indent: 0; }
+:is(.chapter-body, #aux-editor, .darling) li :is(ul, ol) { margin: 0.1em 0; }
+:is(.chapter-body, #aux-editor, .darling) :is(ul, ol) > :is(ul, ol) { margin: 0.1em 0; }
+:is(.chapter-body, #aux-editor, .darling) li::marker { color: var(--rich-muted); }
+
+/* checklists: the box is drawn, and clicking it ticks the item */
+:is(.chapter-body, #aux-editor, .darling) ul.tasks { list-style: none; padding-left: 0.2em; }
+:is(.chapter-body, #aux-editor, .darling) ul.tasks > li { position: relative; padding-left: 1.75em; }
+:is(.chapter-body, #aux-editor, .darling) ul.tasks > li::before {
+  content: ''; position: absolute; left: 0.1em; top: 0.38em;
+  width: 0.9em; height: 0.9em; box-sizing: border-box;
+  border: 1.5px solid var(--rich-muted); border-radius: 3px; cursor: pointer;
+}
+:is(.chapter-body, #aux-editor, .darling) ul.tasks > li[data-checked="true"]::before {
+  background: var(--accent); border-color: var(--accent);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 6.2l2.3 2.3 4.7-5' fill='none' stroke='%23191919' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-size: 100% 100%;
+}
+:is(.chapter-body, #aux-editor, .darling) ul.tasks > li[data-checked="true"] { color: var(--rich-muted); }
+
+:is(.chapter-body, #aux-editor, .darling) pre {
+  position: relative; font-family: var(--mono); font-size: 0.79em; line-height: 1.6;
+  background: var(--rich-soft); border: 1px solid var(--rich-rule); border-radius: 6px;
+  padding: 0.85em 1.1em; margin: 0.9em 0; white-space: pre-wrap; overflow-wrap: anywhere;
+  tab-size: 4; text-indent: 0;
+}
+:is(.chapter-body, #aux-editor, .darling) pre[data-lang]::before {
+  content: attr(data-lang); position: absolute; top: 0.35em; right: 0.7em;
+  font-size: 0.8em; color: var(--rich-muted); user-select: none; pointer-events: none;
+}
+:is(.chapter-body, #aux-editor, .darling) code {
+  font-family: var(--mono); font-size: 0.84em; background: var(--rich-code);
+  padding: 0.06em 0.32em; border-radius: 4px;
+}
+:is(.chapter-body, #aux-editor, .darling) pre code { background: none; padding: 0; font-size: 1em; }
+
+/* links: underlined and tinted; a dotted underline means a file on this Mac */
+:is(.chapter-body, #aux-editor, .darling) a[href] {
+  color: var(--rich-link); text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--rich-link) 45%, transparent);
+  text-underline-offset: 2px; text-decoration-thickness: 1px;
+}
+:is(.chapter-body, #aux-editor) a[href] { cursor: text; }
+.darling a[href] { cursor: pointer; }
+:is(.chapter-body, #aux-editor, .darling) a[href^="file:"] { text-decoration-style: dotted; text-decoration-thickness: 1.5px; }
+
+:is(.chapter-body, #aux-editor, .darling) table {
+  border-collapse: collapse; margin: 1em 0; width: 100%;
+  font-size: 0.9em; line-height: 1.45; text-indent: 0;
+}
+:is(.chapter-body, #aux-editor, .darling) :is(th, td) {
+  border: 1px solid var(--rich-rule); padding: 0.38em 0.65em;
+  vertical-align: top; text-align: left; white-space: pre-wrap; min-width: 2.5em;
+}
+:is(.chapter-body, #aux-editor, .darling) th { font-weight: 700; background: var(--rich-soft); }
+
+:is(.chapter-body, #aux-editor, .darling) hr {
+  border: none; border-top: 1px solid var(--rich-rule); margin: 1.7em 18%;
+}
+
+/* pictures: centred, never wider than the page; S/M/L from the picture card */
+figure.neo-img { margin: 1.3em auto; text-align: center; user-select: none; text-indent: 0; }
+figure.neo-img img {
+  display: block; margin: 0 auto; max-width: 100%; height: auto;
+  border-radius: 3px; cursor: default;
+}
+figure.neo-img[data-width="25"] img { width: 25%; }
+figure.neo-img[data-width="50"] img { width: 50%; }
+figure.neo-img[data-width="75"] img { width: 75%; }
+figure.neo-img figcaption {
+  font-size: 0.8em; color: var(--rich-muted); font-style: italic;
+  margin-top: 0.55em; line-height: 1.45;
+}
+figure.neo-img.selected img { outline: 2px solid var(--accent); outline-offset: 3px; }
+figure.neo-img.broken img { display: none; }
+figure.neo-img.broken::before {
+  content: 'Picture not found — it may have moved or been renamed';
+  display: block; padding: 1.4em 1em; border: 1px dashed var(--rich-rule); border-radius: 6px;
+  font-size: 0.8em; font-style: italic; color: var(--rich-muted);
+}
+.darling figure.neo-img { max-width: 60%; }
+
+/* ---------- the formatting bar ---------- */
+
+#fmt-bar {
+  position: fixed; top: 34px; left: 50%; z-index: 90;
+  display: flex; align-items: center; gap: 1px;
+  padding: 4px 5px; background: #242424; border: 1px solid #383838; border-radius: 9px;
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.45);
+  opacity: 0; pointer-events: none; transform: translate(-50%, -6px);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+#fmt-bar.show { opacity: 1; pointer-events: auto; transform: translate(-50%, 0); }
+#editor-view.side-pinned #fmt-bar { left: calc(50% - 125px); }
+#fmt-bar button {
+  background: none; border: none; color: #a8a8a8; cursor: pointer;
+  height: 28px; min-width: 28px; padding: 0 6px; border-radius: 6px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-family: Georgia, serif; font-size: 14px; line-height: 1;
+}
+#fmt-bar button:hover { background: #333; color: #eee; }
+#fmt-bar button.on { color: var(--accent); background: #302c24; }
+#fmt-bar button b, #fmt-bar button i, #fmt-bar button s { font-size: 15px; }
+#fmt-bar .fb-t { font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: 11.5px; font-weight: 600; letter-spacing: 0.3px; }
+#fmt-bar .sep { width: 1px; height: 18px; background: #3a3a3a; margin: 0 4px; }
+#fmt-bar svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+#fmt-bar svg .fill { fill: currentColor; stroke: none; }
+#fmt-bar svg .faint { opacity: 0.4; }
+body.bright #fmt-bar button { color: #c8c8c8; }
+
+/* ---------- link and picture cards ---------- */
+
+#link-card, #pic-card {
+  position: fixed; z-index: 250; display: flex; align-items: center; gap: 2px;
+  background: #262626; border: 1px solid #3a3a3a; border-radius: 8px;
+  padding: 4px 5px 4px 10px; box-shadow: 0 6px 22px rgba(0, 0, 0, 0.5);
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: 12px; color: #bbb;
+}
+#link-card[hidden], #pic-card[hidden] { display: none; }
+#pic-card { padding-left: 5px; }
+#link-card .lc-url {
+  max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  margin-right: 6px; color: #ddd;
+}
+#link-card.lc-file .lc-url::before { content: '📄 '; filter: grayscale(1); opacity: 0.7; }
+#link-card button, #pic-card button {
+  background: none; border: none; color: #aaa; font-size: 12px; cursor: pointer;
+  padding: 4px 8px; border-radius: 5px;
+}
+#link-card button:hover, #pic-card button:hover { background: #333; color: var(--accent); }
+#link-card button[hidden] { display: none; }
+#pic-card button.on { color: var(--accent); }
+#pic-card button.danger:hover { color: #d97b6c; }
+#pic-card .sep { width: 1px; height: 16px; background: #3a3a3a; margin: 0 3px; }
+
+/* ---------- dialogs ---------- */
+
+.rich-modal .rm-label { display: block; margin: 14px 0 0; font-size: 13px; color: #bbb; }
+.rich-modal .rm-label input { margin-top: 6px; }
+.rich-modal .rm-row { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
+.rich-modal .rm-row input { flex: 1; margin-top: 0; }
+.rich-modal .rm-row .btn-quiet { border: 1px solid #3a3a3a; border-radius: 6px; padding: 8px 12px; font-size: 13px; color: #bbb; }
+.rich-modal .rm-row .btn-quiet:hover { border-color: var(--accent); color: var(--accent); }
+.rich-modal .rm-row .rm-picked { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rich-modal .rm-num { flex: 1; margin-top: 0; }
+.rich-modal .rm-check { display: flex; gap: 8px; align-items: center; margin: 12px 0 0; font-size: 13px; color: #bbb; cursor: pointer; }
+.rich-modal .rm-check input { display: inline-block; width: auto; margin: 0; accent-color: var(--accent); }
+.rich-modal .rm-hint { font-size: 12px; color: #777; margin: 10px 0 0; line-height: 1.5; }
+.rich-modal .rm-actions { display: flex; align-items: center; gap: 10px; margin-top: 18px; }
+.rich-modal .rm-remove:hover { color: #d97b6c; border-color: #6b3a34; }
+.rich-modal button.btn-quiet { white-space: nowrap; }
+
+/* the help sheet's key column grows to fit the longer chords */
+.help-grid { grid-template-columns: max-content 1fr; }
+
+/* the formatting bar's own tooltips: quick, with the shortcut alongside */
+#fmt-tip {
+  position: fixed; z-index: 260; pointer-events: none;
+  background: #111; color: #ddd; border: 1px solid #3a3a3a; border-radius: 6px;
+  padding: 5px 9px; font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: 12px;
+  white-space: nowrap; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+}
+#fmt-tip[hidden] { display: none; }
+#fmt-tip .tip-keys { color: var(--accent); margin-left: 8px; letter-spacing: 0.5px; }
